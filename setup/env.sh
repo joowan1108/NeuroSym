@@ -24,3 +24,28 @@ export RLDX_MODEL="$CKPT/RLDX-1-FT-RC365"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export TOKENIZERS_PARALLELISM=false
+
+# Downloads run in the background (setup/download.sh, started by the on-start script) in the
+# order assets -> xr1 -> rldx and leave a marker per item, so work can start as soon as the
+# pieces it needs are there.
+export DOWNLOAD_STATE="$WORK/.download"
+wait_for_download() {   # usage: wait_for_download assets|xr1|rldx
+    local item="$1" shown=0
+    while [[ ! -f $DOWNLOAD_STATE/$item.done ]]; do
+        if [[ -f $DOWNLOAD_STATE/failed ]]; then
+            echo "[x] download failed: $(cat "$DOWNLOAD_STATE/failed"); see $WORK/download.log" >&2
+            echo "    re-run:  bash $PROJECT/setup/download.sh" >&2
+            return 1
+        fi
+        if ! { [[ -f $DOWNLOAD_STATE/pid ]] && kill -0 "$(cat "$DOWNLOAD_STATE/pid")" 2>/dev/null; }; then
+            echo "[x] '$item' is not downloaded and no download is running." >&2
+            echo "    start it:  nohup bash $PROJECT/setup/download.sh > $WORK/download.log 2>&1 &" >&2
+            return 1
+        fi
+        if (( shown == 0 )); then
+            echo "[i] waiting for download of '$item' (progress: tail -f $WORK/download.log)"
+            shown=1
+        fi
+        sleep 15
+    done
+}

@@ -81,10 +81,11 @@ Rent → Loading(이미지 다운로드) → Running 이 되면 SSH 로 접속�
 접속이 거부되면 인스턴스 카드의 열쇠 아이콘에서 그 인스턴스에 SSH 키를 추가합니다.
 
 ```bash
-tail -f /workspace/download.log      # 에셋·체크포인트 다운로드 진행 상황
 cd /workspace/NeuroSym && bash setup/check.sh   # nvidia-smi, 세 환경의 CUDA, EGL 렌더링, 시뮬레이터 속도
 ```
 
+다운로드가 끝나기를 기다릴 필요 없습니다. `check.sh` 와 `run_all.sh` 는 필요한 파일이 받아질 때까지
+스스로 기다리고, XR-1 실험이 도는 동안 RLDX-1 체크포인트를 받습니다(진행 상황: `tail -f /workspace/download.log`).
 이후 실험 순서는 README 의 "vast.ai 에서 실행" 을 따릅니다.
 
 ## 5. 종료

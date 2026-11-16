@@ -7,6 +7,8 @@
 # Everything is overridable from the environment, e.g.
 #   MODELS=xr1 TASKS=CoffeeSetupMug N_ENVS=8 STEPS_CoffeeSetupMug=50000 bash scripts/run_all.sh
 # Finished stages are skipped, so the script can simply be re-run after an interruption.
+# It can be started right after logging in: it waits for the RoboCasa assets, then for each
+# model's checkpoint, while setup/download.sh keeps downloading in the background.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../setup/env.sh"
 cd "$PROJECT"
@@ -31,7 +33,9 @@ SERVER_PID=""
 stop_server() { [[ -n $SERVER_PID ]] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""; }
 trap stop_server EXIT
 
+wait_for_download assets
 for model in $MODELS; do
+    wait_for_download "$model"
     mkdir -p "$RESULTS/$model"
     bash scripts/run_server.sh "$model" "$PORT" >"$RESULTS/$model/server.log" 2>&1 &
     SERVER_PID=$!

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# [instance] GPU, EGL rendering and simulator speed check. Run after download.sh.
+# [instance] GPU, EGL rendering and simulator speed check. Waits for the RoboCasa assets.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 ldconfig -p | grep -q libEGL_nvidia || echo "[!] libEGL_nvidia missing: the template needs -e NVIDIA_DRIVER_CAPABILITIES=all"
 "$VENVS/xr1/bin/python" -c "import torch; print('xr1  cuda:', torch.cuda.is_available(), torch.__version__)"
 "$SRC/RLDX-1/.venv/bin/python" -c "import torch; print('rldx cuda:', torch.cuda.is_available(), torch.__version__)"
+wait_for_download assets
 "$VENVS/sim/bin/python" - <<'PY'
 import time
 import gymnasium as gym, numpy as np, robocasa, torch

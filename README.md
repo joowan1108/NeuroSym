@@ -58,9 +58,13 @@ RL로 학습합니다. 여기서는 논문의 π0 실험 설정(부록 C.5, 표 
 
 GPU 는 **RTX 4090** 기준입니다(이미지의 RLDX-1 환경이 공식 lockfile 의 CUDA 12.6 빌드 torch 를 씁니다).
 
+On-start 가 에셋 → XR-1 체크포인트 → RLDX-1 체크포인트 순서로 백그라운드 다운로드를 시작합니다.
+아래 명령은 다운로드가 끝나기를 기다리지 않고 접속하자마자 실행해도 됩니다. 각 명령이 자기에게
+필요한 것만 기다리므로(`check.sh` 와 XR-1 은 에셋과 XR-1 체크포인트, RLDX-1 은 RLDX-1 체크포인트),
+XR-1 실험이 도는 동안 RLDX-1 체크포인트가 받아집니다. 다운로드가 실패하면 명령이 바로 멈추고 알려 줍니다.
+
 ```bash
-# 인스턴스 접속 후
-tail -f /workspace/download.log          # On-start 가 받는 에셋·체크포인트 진행 상황
+# 인스턴스 접속 후 (진행 상황: tail -f /workspace/download.log)
 cd /workspace/NeuroSym && tmux new -s dsrl
 bash setup/check.sh                      # GPU, EGL 렌더링, 시뮬레이터 속도 확인
 
