@@ -74,6 +74,22 @@ for model in $MODELS; do
         >> "$RESULTS/$model/gpu_usage.csv" &
     MON_PID=$!
     echo "[run] started $model server (pid $SERVER_PID); log: $RESULTS/$model/server.log"
+    # Wait for the "ready:" line the servers print after loading the model, so loading time is
+    # recorded separately and a crash during loading stops the run right away.
+    until grep -q "ready:" "$RESULTS/$model/server.log" 2>/dev/null; do
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "[x] $model server exited while loading; see $RESULTS/$model/server.log" >&2
+            tail -20 "$RESULTS/$model/server.log" >&2
+            exit 1
+        fi
+        if (( SECONDS - MODEL_T0 > 3600 )); then
+            echo "[x] $model server not ready after 1 h; see $RESULTS/$model/server.log" >&2
+            exit 1
+        fi
+        sleep 2
+    done
+    printf '%s\t%s\n' "$(date -Is)" "$((SECONDS - MODEL_T0))" >> "$RESULTS/$model/model_load_time.tsv"
+    echo "[run] $model server ready after $((SECONDS - MODEL_T0)) s"
 
     for task in $TASKS; do
         out="$RESULTS/$model/$task"

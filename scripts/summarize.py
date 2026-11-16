@@ -87,20 +87,28 @@ def main():
         ])
     table(header, rows)
 
-    gpu_header = ["model", "GPU", "GPU hours (h)", "mean GPU util (%)", "peak GPU memory (MiB)"]
+    gpu_header = [
+        "model", "GPU", "GPU hours (h)", "model loading (h)", "GPU hours excl. loading (h)",
+        "mean GPU util (%)", "peak GPU memory (MiB)",
+    ]
     gpu_rows = []
     for model_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         wall = read_tsv_seconds(model_dir / "model_wall_time.tsv")
         if not wall:
             continue
         hours = sum(wall.values()) / 3600
+        load_h = sum(read_tsv_seconds(model_dir / "model_load_time.tsv").values()) / 3600
         util, peak = gpu_stats(model_dir / "gpu_usage.csv")
-        gpu_rows.append([model_dir.name, f"1x {gpu}", f"{hours:.2f}", num(util, "{:.0f}"), num(peak)])
+        gpu_rows.append([
+            model_dir.name, f"1x {gpu}", f"{hours:.2f}", f"{load_h:.2f}", f"{hours - load_h:.2f}",
+            num(util, "{:.0f}"), num(peak),
+        ])
     if gpu_rows:
         print()
         table(gpu_header, gpu_rows)
         total = sum(float(r[2]) for r in gpu_rows)
-        print(f"\ntotal: 1x {gpu}, {total:.2f} h")
+        work = sum(float(r[4]) for r in gpu_rows)
+        print(f"\ntotal: 1x {gpu}, {total:.2f} h ({work:.2f} h excluding model loading)")
 
     with (root / "summary.csv").open("w", newline="") as f:
         csv.writer(f).writerows([header] + rows)

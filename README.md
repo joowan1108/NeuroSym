@@ -47,10 +47,11 @@ GPU 사용량은 모델별로 `$RESULTS/gpu_summary.csv` 에 따로 정리됩니
 | 항목 | 정의 |
 |---|---|
 | GPU | `nvidia-smi` 가 보고한 GPU 이름 (`$RESULTS/gpu.txt`) |
-| GPU hours (h) | 모델 서버를 띄운 순간부터 내린 순간까지의 시간 (모델 로딩 포함, 다운로드 대기 제외) |
+| GPU hours (h) | 모델 서버를 띄운 순간부터 내린 순간까지의 시간 (다운로드 대기 제외) |
+| model loading (h) / GPU hours excl. loading (h) | 그중 서버가 `ready` 를 찍기까지의 모델 로딩 시간과, 그것을 뺀 실제 실험 시간 |
 | mean GPU util (%) / peak GPU memory (MiB) | 10초마다 기록한 `$RESULTS/<model>/gpu_usage.csv` 의 평균 사용률과 최대 메모리 |
 
-출력 예: `xr1 | 1x NVIDIA GeForce RTX 4090 | 13.20 | 41 | 15800`, 마지막 줄에 두 모델 합계.
+마지막 줄에 두 모델 합계가 로딩 포함/제외로 나옵니다.
 
 `train_summary.json` 에는 시간 분해(VLA 추론 / 시뮬레이터 / SAC 업데이트)와 중간 평가 곡선도 들어 있습니다.
 `--target-success 0.8` 을 주면 그 성공률에 처음 도달한 시간·스텝(`to_target`)도 기록합니다.
