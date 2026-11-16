@@ -22,6 +22,9 @@ EVAL_EPISODES="${EVAL_EPISODES:-50}"
 PORT="${PORT:-10086}"
 RESULTS="${RESULTS:-$PROJECT/results}"
 EXTRA_TRAIN_ARGS="${EXTRA_TRAIN_ARGS:-}"
+# PARALLEL=1 runs all tasks of a model at the same time against one policy server. Faster overall,
+# but the tasks compete for the server, so "RL time" is longer than when a task runs alone.
+PARALLEL="${PARALLEL:-0}"
 # RL budget in environment steps (task horizons: 600 / 3000 / 2100).
 STEPS_CoffeeSetupMug="${STEPS_CoffeeSetupMug:-100000}"
 STEPS_GetToastedBread="${STEPS_GetToastedBread:-300000}"
@@ -58,6 +61,26 @@ stage() {
     printf '%s\t%s\n' "$name" "$((SECONDS - t0))" >> "$out/stage_times.tsv"
 }
 
+# run_task <task>: base evaluation -> DSRL training -> evaluation of the steered policy
+run_task() {
+    local task=$1 out="$RESULTS/$model/$1" steps_var="STEPS_$1"
+    local common=(--model "$model" --task "$task" --port "$PORT" --split "$SPLIT"
+                  --n-envs "$N_ENVS" --seed "$SEED" --out-dir "$out")
+    if [[ ! -f $out/eval_base_iid.json ]]; then
+        stage "$out" base_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES"
+    fi
+    if [[ ! -f $out/train.done ]]; then
+        # shellcheck disable=SC2086
+        stage "$out" train "$PY" -u -m dsrl.train_dsrl "${common[@]}" \
+            --total-env-steps "${!steps_var}" $EXTRA_TRAIN_ARGS
+        touch "$out/train.done"
+    fi
+    if [[ ! -f $out/eval_dsrl.json ]]; then
+        stage "$out" dsrl_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
+            --agent "$out/best.pt"
+    fi
+}
+
 mkdir -p "$RESULTS"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader > "$RESULTS/gpu.txt"
 echo "[run] GPU: $(cat "$RESULTS/gpu.txt")"
@@ -91,29 +114,25 @@ for model in $MODELS; do
     printf '%s\t%s\n' "$(date -Is)" "$((SECONDS - MODEL_T0))" >> "$RESULTS/$model/model_load_time.tsv"
     echo "[run] $model server ready after $((SECONDS - MODEL_T0)) s"
 
+    pids=()
     for task in $TASKS; do
-        out="$RESULTS/$model/$task"
-        mkdir -p "$out"
-        common=(--model "$model" --task "$task" --port "$PORT" --split "$SPLIT"
-                --n-envs "$N_ENVS" --seed "$SEED" --out-dir "$out")
-        steps_var="STEPS_$task"
-
-        if [[ ! -f $out/eval_base_iid.json ]]; then
-            stage "$out" base_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES"
-        fi
-
-        if [[ ! -f $out/train.done ]]; then
-            # shellcheck disable=SC2086
-            stage "$out" train "$PY" -u -m dsrl.train_dsrl "${common[@]}" \
-                --total-env-steps "${!steps_var}" $EXTRA_TRAIN_ARGS
-            touch "$out/train.done"
-        fi
-
-        if [[ ! -f $out/eval_dsrl.json ]]; then
-            stage "$out" dsrl_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
-                --agent "$out/best.pt"
+        mkdir -p "$RESULTS/$model/$task"
+        if (( PARALLEL )); then   # all tasks of this model at once, sharing the policy server
+            run_task "$task" > "$RESULTS/$model/$task/run.log" 2>&1 &
+            pids+=("$!")
+            echo "[run] $model/$task started in background (log: $RESULTS/$model/$task/run.log)"
+        else
+            run_task "$task"
         fi
     done
+    failed=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || failed=1
+    done
+    if (( failed )); then
+        echo "[x] a task of $model failed; see $RESULTS/$model/*/run.log" >&2
+        exit 1
+    fi
     stop_server
 done
 

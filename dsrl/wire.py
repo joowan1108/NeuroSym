@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import socket
 import struct
+import threading
 import time
 import traceback
 from typing import Any, Callable
@@ -77,27 +78,38 @@ def recv_msg(sock: socket.socket) -> Any:
 
 
 def serve(handler: Callable[[dict], dict], host: str, port: int) -> None:
-    """Blocking single-threaded server. Handler errors are returned to the caller."""
+    """Blocking server. Every client connection gets its own thread; the handler itself runs
+    under one lock (one model, one GPU), so several experiments can share a policy server.
+    Handler errors are returned to the caller."""
+    lock = threading.Lock()
+
+    def client(conn: socket.socket) -> None:
+        with conn:
+            while True:
+                try:
+                    request = recv_msg(conn)
+                except (ConnectionError, OSError):
+                    return
+                try:
+                    with lock:
+                        response = handler(request)
+                except Exception:  # report to the client instead of dying
+                    response = {"error": traceback.format_exc()}
+                    print(response["error"], flush=True)
+                try:
+                    send_msg(conn, response)
+                except (ConnectionError, OSError):
+                    return
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind((host, port))
-        srv.listen(4)
+        srv.listen(16)
         print(f"[server] listening on {host}:{port}", flush=True)
         while True:
             conn, _ = srv.accept()
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            with conn:
-                while True:
-                    try:
-                        request = recv_msg(conn)
-                    except ConnectionError:
-                        break
-                    try:
-                        response = handler(request)
-                    except Exception:  # report to the client instead of dying
-                        response = {"error": traceback.format_exc()}
-                        print(response["error"], flush=True)
-                    send_msg(conn, response)
+            threading.Thread(target=client, args=(conn,), daemon=True).start()
 
 
 class RpcClient:

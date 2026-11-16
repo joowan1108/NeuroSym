@@ -12,8 +12,14 @@ from typing import Callable
 
 import numpy as np
 
+import os
+
 from dsrl.envs import EnvPool
 from dsrl.policy_client import SteerablePolicy
+
+
+# unique per client process: several experiments may share one policy server
+SESSION_PREFIX = f"p{os.getpid()}"
 
 
 def run_episodes(
@@ -57,7 +63,7 @@ def run_episodes(
                 obs,
                 noise,
                 reset=[episodes[i]["first"] for i in ids],
-                session_ids=[f"env{i}" for i in ids],
+                session_ids=[f"{SESSION_PREFIX}-env{i}" for i in ids],
             )
             for j, i in enumerate(ids):
                 episodes[i]["first"] = False
