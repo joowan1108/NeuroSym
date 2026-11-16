@@ -37,6 +37,8 @@ def main():
         agent = DSRLAgent.load(args.agent, device=args.device)
         if agent.cfg["act_dim"] not in (policy.step_dim, policy.step_dim * policy.horizon):
             raise ValueError("agent latent dim does not match this model")
+        # older checkpoints have no noise_mode: infer it from the latent dimension
+        policy.noise_mode = agent.noise_mode or ("chunk" if agent.cfg["act_dim"] > policy.step_dim else "repeat")
 
         def choose(obs):
             w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]), deterministic=True)
@@ -50,6 +52,7 @@ def main():
 
         def choose(obs):
             w = rng.standard_normal((len(obs), policy.step_dim)).astype(np.float32)
+            policy.noise_mode = "repeat"
             return w, policy.expand(w)
 
         tag = args.tag or "base_repeat"

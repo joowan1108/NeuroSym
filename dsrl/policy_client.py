@@ -45,16 +45,21 @@ class SteerablePolicy:
         return rng.standard_normal((batch, self.horizon, self.dim)).astype(np.float32)
 
     def expand(self, w: np.ndarray) -> np.ndarray:
-        """Latent action (B, step_dim) or (B, H * step_dim) -> initial noise (B, H, D)."""
+        """Latent action -> initial noise (B, H, D), according to `noise_mode`.
+
+        chunk        w is (B, H * step_dim), rescaled to norm sqrt(H * step_dim)
+        repeat       w is (B, step_dim), used as is and repeated along the chunk
+        repeat_norm  like repeat, but rescaled to norm sqrt(step_dim) first
+
+        The rescaling keeps the noise at the radius where N(0, I) concentrates. The flow model
+        only ever saw noise of that norm: with small-norm noise XR-1 drops from 50% to 15-20%
+        success, and SAC shrinks its noise towards the mean as it becomes confident."""
         noise = self.rng.standard_normal((w.shape[0], self.horizon, self.dim)).astype(np.float32)
+        if self.noise_mode != "repeat":
+            w = w * (np.sqrt(w.shape[1]) / np.maximum(np.linalg.norm(w, axis=1, keepdims=True), 1e-6))
         if w.shape[1] == self.step_dim:
             noise[:, :, self.steer] = w[:, None, :]
         else:
-            # Rescale to the radius where N(0, I) concentrates (sqrt(d)). The flow model only ever
-            # saw noise of that norm: with small-norm noise XR-1 drops from 50% to 15-20% success,
-            # and SAC shrinks its noise towards the mean as it becomes confident. The agent
-            # therefore chooses a direction; the norm always stays in-distribution.
-            w = w * (np.sqrt(w.shape[1]) / np.maximum(np.linalg.norm(w, axis=1, keepdims=True), 1e-6))
             noise[:, :, self.steer] = w.reshape(w.shape[0], self.horizon, self.step_dim)
         return noise
 

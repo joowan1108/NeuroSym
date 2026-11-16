@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--warmup-episodes", type=int, default=8, help="base-policy rollouts with w~N(0,I)")
     parser.add_argument("--utd", type=int, default=20, help="gradient steps per decision")
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--noise-mode", default="chunk", choices=("chunk", "repeat"),
+    parser.add_argument("--noise-mode", default="chunk", choices=("chunk", "repeat", "repeat_norm"),
                         help="chunk: steer the whole chunk noise; repeat: one step noise repeated (pi_0 trick)")
     parser.add_argument("--magnitude", type=float, default=3.0, help="b_W: latent actions live in [-b_W, b_W]^d")
     parser.add_argument("--gamma", type=float, default=0.999)
@@ -62,6 +62,7 @@ def main():
         act_dim=d, magnitude=args.magnitude, hidden=args.hidden,
         n_critics=args.n_critics, gamma=args.gamma, init_alpha=args.init_alpha, device=args.device,
     )
+    agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
     buffer = ReplayBuffer(args.buffer_size, (9, 64, 64), PROP_DIM, d)
     eval_every = args.eval_every or max(1, args.total_env_steps // 4)
     eval_seeds = [args.seed + EVAL_SEED_OFFSET + i for i in range(args.eval_episodes)]

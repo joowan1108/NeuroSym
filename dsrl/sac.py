@@ -239,6 +239,7 @@ class DSRLAgent:
                 prop_mean=self.prop_mean.cpu(),
                 prop_std=self.prop_std.cpu(),
                 grad_steps=self.grad_steps,
+                noise_mode=getattr(self, "noise_mode", None),
             ),
             path,
         )
@@ -255,4 +256,5 @@ class DSRLAgent:
         agent.prop_mean = ckpt["prop_mean"].to(agent.device)
         agent.prop_std = ckpt["prop_std"].to(agent.device)
         agent.grad_steps = ckpt["grad_steps"]
+        agent.noise_mode = ckpt.get("noise_mode")
         return agent
