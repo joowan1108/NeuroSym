@@ -7,7 +7,7 @@
 | OS 패키지, CUDA 12.4 devel, 파이썬 환경 3개, 고정된 외부 저장소 | Docker 이미지 `/opt` |
 | 이 저장소의 코드 | GitHub `joowan1108/NeuroSym` (Public, On-start 에서 clone) |
 | RoboCasa 에셋 (~10 GB), 체크포인트 (~24 GB) | On-start 에서 인스턴스로 다운로드 |
-| `HF_TOKEN` 등 토큰 | Vast 계정 환경변수 |
+| 토큰 (지금은 필요 없음) | Vast 계정 환경변수 |
 
 ## 1. 이미지 빌드와 Docker Hub 푸시 (내 PC)
 
@@ -67,8 +67,12 @@ nohup bash setup/download.sh > /workspace/download.log 2>&1 &
 
 - `NVIDIA_DRIVER_CAPABILITIES=all` 은 MuJoCo 의 GPU(EGL) 렌더링에 필요합니다. 이미지에도 들어 있지만
   컨테이너 생성 시점에 적용되도록 템플릿에도 넣습니다.
-- 토큰은 템플릿이 아니라 Account → Environment Variables 에 넣습니다. `HF_TOKEN` 은 RLDX-1 체크포인트가
-  인증을 요구할 때 필요합니다. 저장소가 Public 이라 `GITHUB_TOKEN` 은 필요 없습니다.
+- 지금은 넣을 토큰이 없습니다. 두 체크포인트 모두 공개(gated 아님)라 `HF_TOKEN` 이 필요 없고,
+  저장소가 Public 이라 `GITHUB_TOKEN` 도 필요 없습니다. 나중에 토큰이 필요해지면 템플릿이 아니라
+  Account → Environment Variables 에 넣습니다.
+- On-start Script 칸에는 스크립트 내용만 넣습니다. 문서의 코드 블록 표시(```` ``` ````)를 같이 넣으면
+  셸이 백틱을 명령 실행으로 해석해서 스크립트가 깨집니다.
+- Extra Filters 는 `cpu_arch in ['amd64'] cuda_max_good>=12.4` 로 둡니다. 이미지는 amd64 전용입니다.
 - **SSH 키는 개인 계정(Personal view)에서만 등록할 수 있습니다.** 개인 계정의 SSH Keys 에
   `~/.ssh/id_ed25519.pub` 한 줄을 등록한 뒤 팀 계정으로 돌아와 대여합니다.
 

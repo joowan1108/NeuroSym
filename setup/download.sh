@@ -3,7 +3,7 @@
 # Leaves $WORK/.download/<item>.done after each item so experiments can start early
 # (see wait_for_download in env.sh). Safe to re-run: finished items are skipped and
 # interrupted Hugging Face downloads resume.
-# HF_TOKEN, if needed, comes from the Vast account environment variables.
+# Both checkpoints are public (not gated), so no HF_TOKEN is needed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 mkdir -p "$CKPT" "$HF_HOME" "$DOWNLOAD_STATE"
