@@ -70,7 +70,7 @@ class Critic(nn.Module):
 class Actor(nn.Module):
     """pi^W(w | s): tanh-Gaussian scaled to the action magnitude b_W."""
 
-    def __init__(self, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude):
+    def __init__(self, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude, init_std=1.0):
         super().__init__()
         self.encoder = Encoder(in_channels, image_size)
         layers, d = [], self.encoder.out_dim + prop_dim
@@ -81,6 +81,13 @@ class Actor(nn.Module):
         self.mean = nn.Linear(hidden, act_dim)
         self.log_std = nn.Linear(hidden, act_dim)
         self.magnitude = magnitude
+        # Start as (approximately) w ~ N(0, init_std^2), i.e. the base policy's own noise, so
+        # that switching from warm-up rollouts to the actor does not change behaviour.
+        with torch.no_grad():
+            self.mean.weight.mul_(0.01)
+            self.mean.bias.zero_()
+            self.log_std.weight.mul_(0.01)
+            self.log_std.bias.fill_(math.log(_pre_tanh_std(init_std / magnitude)))
 
     def forward(self, img, prop, deterministic: bool = False):
         h = self.trunk(torch.cat([self.encoder(img), prop], dim=-1))
@@ -93,6 +100,16 @@ class Actor(nn.Module):
         ).sum(-1)
         log_prob = log_prob - torch.log(self.magnitude * (1 - squashed**2) + 1e-6).sum(-1)
         return self.magnitude * squashed, log_prob
+
+
+def _pre_tanh_std(target: float) -> float:
+    """sigma such that tanh(N(0, sigma^2)) has standard deviation `target` (bisection)."""
+    u = torch.randn(200_000, generator=torch.Generator().manual_seed(0))
+    lo, hi = 1e-3, 10.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if torch.tanh(u * mid).std() < target else (lo, mid)
+    return (lo + hi) / 2
 
 
 class ReplayBuffer:
@@ -147,7 +164,8 @@ class DSRLAgent:
         )
         self.device = torch.device(device)
         self.gamma, self.tau = gamma, tau
-        self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude).to(self.device)
+        self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude,
+                           init_std=min(1.0, 0.9 * magnitude)).to(self.device)
         make_critic = lambda: Critic(  # noqa: E731
             n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers
         ).to(self.device)

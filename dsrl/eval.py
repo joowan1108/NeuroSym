@@ -35,7 +35,7 @@ def main():
         from dsrl.sac import DSRLAgent
 
         agent = DSRLAgent.load(args.agent, device=args.device)
-        if agent.cfg["act_dim"] != policy.steer_dim:
+        if agent.cfg["act_dim"] not in (policy.step_dim, policy.step_dim * policy.horizon):
             raise ValueError("agent latent dim does not match this model")
 
         def choose(obs):
@@ -49,7 +49,7 @@ def main():
     else:
 
         def choose(obs):
-            w = rng.standard_normal((len(obs), policy.steer_dim)).astype(np.float32)
+            w = rng.standard_normal((len(obs), policy.step_dim)).astype(np.float32)
             return w, policy.expand(w)
 
         tag = args.tag or "base_repeat"

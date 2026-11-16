@@ -34,7 +34,9 @@ def main():
     parser.add_argument("--warmup-episodes", type=int, default=8, help="base-policy rollouts with w~N(0,I)")
     parser.add_argument("--utd", type=int, default=20, help="gradient steps per decision")
     parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--magnitude", type=float, default=2.0, help="b_W: latent actions live in [-b_W, b_W]^d")
+    parser.add_argument("--noise-mode", default="chunk", choices=("chunk", "repeat"),
+                        help="chunk: steer the whole chunk noise; repeat: one step noise repeated (pi_0 trick)")
+    parser.add_argument("--magnitude", type=float, default=3.0, help="b_W: latent actions live in [-b_W, b_W]^d")
     parser.add_argument("--gamma", type=float, default=0.999)
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--n-critics", type=int, default=10)
@@ -65,7 +67,7 @@ def main():
     eval_seeds = [args.seed + EVAL_SEED_OFFSET + i for i in range(args.eval_episodes)]
     print(
         f"[train] {args.model}/{args.task}: horizon={pool.horizon} exec_steps={exec_steps} "
-        f"latent dim={d} (noise {policy.horizon}x{policy.dim})", flush=True,
+        f"latent dim={d} ({args.noise_mode}; noise {policy.horizon}x{policy.dim})", flush=True,
     )
 
     stats = dict(env_steps=0, decisions=0, episodes=0, successes=0, rl_time=0.0, update_time=0.0,

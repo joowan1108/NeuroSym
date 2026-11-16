@@ -30,7 +30,7 @@ def add_common_args(parser) -> None:
 
 
 def connect(args) -> tuple[SteerablePolicy, EnvPool, int]:
-    policy = SteerablePolicy(args.host, args.port)
+    policy = SteerablePolicy(args.host, args.port, getattr(args, "noise_mode", "chunk"), args.seed)
     if policy.name != args.model:
         raise RuntimeError(f"server on port {args.port} serves {policy.name!r}, not {args.model!r}")
     exec_steps = args.exec_steps or policy.default_exec_steps
