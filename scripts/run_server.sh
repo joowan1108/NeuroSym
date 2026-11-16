@@ -2,7 +2,7 @@
 # Start the steerable policy server for one model:  scripts/run_server.sh {xr1|rldx} [port]
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../setup/env.sh"
-MODEL="${1:?usage: run_server.sh {xr1|rldx} [port]}"
+MODEL="${1:?usage: run_server.sh xr1|rldx [port]}"
 PORT="${2:-10086}"
 cd "$PROJECT"
 
