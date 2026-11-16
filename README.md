@@ -40,6 +40,17 @@ RL로 학습합니다. 여기서는 논문의 π0 실험 설정(부록 C.5, 표 
 | RL VLA queries (#) | VLA 호출 횟수 = 잠재 MDP 전이 수 |
 | time/steps to best | 중간 평가에서 최고 성공률에 처음 도달한 시점까지의 RL 시간·스텝 |
 | steps/episode | 성공 에피소드의 평균 길이 (논문 그림 17의 steps-to-success) |
+| wall time all stages (h) | 태스크 하나의 base 평가 + 학습(중간 평가 포함) + DSRL 평가 벽시계 시간 |
+
+GPU 사용량은 모델별로 `$RESULTS/gpu_summary.csv` 에 따로 정리됩니다.
+
+| 항목 | 정의 |
+|---|---|
+| GPU | `nvidia-smi` 가 보고한 GPU 이름 (`$RESULTS/gpu.txt`) |
+| GPU hours (h) | 모델 서버를 띄운 순간부터 내린 순간까지의 시간 (모델 로딩 포함, 다운로드 대기 제외) |
+| mean GPU util (%) / peak GPU memory (MiB) | 10초마다 기록한 `$RESULTS/<model>/gpu_usage.csv` 의 평균 사용률과 최대 메모리 |
+
+출력 예: `xr1 | 1x NVIDIA GeForce RTX 4090 | 13.20 | 41 | 15800`, 마지막 줄에 두 모델 합계.
 
 `train_summary.json` 에는 시간 분해(VLA 추론 / 시뮬레이터 / SAC 업데이트)와 중간 평가 곡선도 들어 있습니다.
 `--target-success 0.8` 을 주면 그 성공률에 처음 도달한 시간·스텝(`to_target`)도 기록합니다.

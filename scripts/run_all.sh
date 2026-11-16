@@ -30,15 +30,49 @@ STEPS_SteamInMicrowave="${STEPS_SteamInMicrowave:-200000}"
 PY="$VENVS/sim/bin/python"
 export PYTHONPATH="$PROJECT${PYTHONPATH:+:$PYTHONPATH}"
 SERVER_PID=""
-stop_server() { [[ -n $SERVER_PID ]] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""; }
+MON_PID=""
+MODEL_T0=0
+stop_server() {
+    # `wait` on a killed child returns 143; "|| true" keeps set -e from aborting the run here.
+    if [[ -n $SERVER_PID ]]; then   # wall time this model held the GPU (summed over re-runs)
+        printf '%s\t%s\n' "$(date -Is)" "$((SECONDS - MODEL_T0))" >> "$RESULTS/$model/model_wall_time.tsv"
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    if [[ -n $MON_PID ]]; then
+        kill "$MON_PID" 2>/dev/null || true
+        wait "$MON_PID" 2>/dev/null || true
+    fi
+    SERVER_PID=""; MON_PID=""
+    return 0
+}
 trap stop_server EXIT
+
+# stage <out_dir> <name> <command...>: runs the command, logs it, and appends
+# "<name>\t<seconds>" to <out_dir>/stage_times.tsv. Must not be called as the
+# condition of if/||/&& (bash would then ignore errors inside it).
+stage() {
+    local out=$1 name=$2 t0=$SECONDS
+    shift 2
+    "$@" 2>&1 | tee -a "$out/log.txt"
+    printf '%s\t%s\n' "$name" "$((SECONDS - t0))" >> "$out/stage_times.tsv"
+}
+
+mkdir -p "$RESULTS"
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader > "$RESULTS/gpu.txt"
+echo "[run] GPU: $(cat "$RESULTS/gpu.txt")"
 
 wait_for_download assets
 for model in $MODELS; do
     wait_for_download "$model"
     mkdir -p "$RESULTS/$model"
+    MODEL_T0=$SECONDS
     bash scripts/run_server.sh "$model" "$PORT" >"$RESULTS/$model/server.log" 2>&1 &
     SERVER_PID=$!
+    # GPU utilisation (%) and memory (MiB) every 10 s while this model runs.
+    nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv,noheader,nounits -l 10 \
+        >> "$RESULTS/$model/gpu_usage.csv" &
+    MON_PID=$!
     echo "[run] started $model server (pid $SERVER_PID); log: $RESULTS/$model/server.log"
 
     for task in $TASKS; do
@@ -48,19 +82,21 @@ for model in $MODELS; do
                 --n-envs "$N_ENVS" --seed "$SEED" --out-dir "$out")
         steps_var="STEPS_$task"
 
-        [[ -f $out/eval_base_iid.json ]] || \
-            "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" 2>&1 | tee -a "$out/log.txt"
+        if [[ ! -f $out/eval_base_iid.json ]]; then
+            stage "$out" base_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES"
+        fi
 
-        # shellcheck disable=SC2086
-        [[ -f $out/train.done ]] || {
-            "$PY" -u -m dsrl.train_dsrl "${common[@]}" --total-env-steps "${!steps_var}" \
-                $EXTRA_TRAIN_ARGS 2>&1 | tee -a "$out/log.txt"
+        if [[ ! -f $out/train.done ]]; then
+            # shellcheck disable=SC2086
+            stage "$out" train "$PY" -u -m dsrl.train_dsrl "${common[@]}" \
+                --total-env-steps "${!steps_var}" $EXTRA_TRAIN_ARGS
             touch "$out/train.done"
-        }
+        fi
 
-        [[ -f $out/eval_dsrl.json ]] || \
-            "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" --agent "$out/best.pt" \
-                2>&1 | tee -a "$out/log.txt"
+        if [[ ! -f $out/eval_dsrl.json ]]; then
+            stage "$out" dsrl_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
+                --agent "$out/best.pt"
+        fi
     done
     stop_server
 done
