@@ -50,6 +50,11 @@ class SteerablePolicy:
         if w.shape[1] == self.step_dim:
             noise[:, :, self.steer] = w[:, None, :]
         else:
+            # Rescale to the radius where N(0, I) concentrates (sqrt(d)). The flow model only ever
+            # saw noise of that norm: with small-norm noise XR-1 drops from 50% to 15-20% success,
+            # and SAC shrinks its noise towards the mean as it becomes confident. The agent
+            # therefore chooses a direction; the norm always stays in-distribution.
+            w = w * (np.sqrt(w.shape[1]) / np.maximum(np.linalg.norm(w, axis=1, keepdims=True), 1e-6))
             noise[:, :, self.steer] = w.reshape(w.shape[0], self.horizon, self.step_dim)
         return noise
 
