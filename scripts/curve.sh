@@ -49,7 +49,7 @@ PY
             [[ -f $out/eval_curve_$steps.json ]] && continue
             "$PY" -u -m dsrl.eval --model "$model" --task "$task" --port "$PORT" --split "$SPLIT" \
                 --n-envs "$N_ENVS" --seed "$SEED" --out-dir "$out" --episodes "$CURVE_EPISODES" \
-                --agent "$ckpt" --tag "curve_$steps"
+                --agent "$ckpt" --tag "curve_$steps" ${FIXED_SCENE:+--fixed-scene "$FIXED_SCENE"}
         done
         "$PY" - "$out" <<'PY'
 import json, sys
