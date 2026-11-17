@@ -135,7 +135,8 @@ def main():
             print(
                 f"[train] steps={stats['env_steps']} ep={stats['episodes']} "
                 f"recent_sr={np.mean(recent) if recent else 0:.2f} q={info['q']:.2f} "
-                f"alpha={info['alpha']:.3f} rl_time={stats['rl_time_live']():.0f}s", flush=True,
+                f"alpha={info['alpha']:.3f} critic_loss={info['critic_loss']:.4f} actor_loss={info['actor_loss']:.3f} "
+                f"rl_time={stats['rl_time_live']():.0f}s", flush=True,
             )
 
     def summary() -> dict:
