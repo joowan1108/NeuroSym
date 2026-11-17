@@ -158,6 +158,7 @@ class DSRLAgent:
         q_max: float | None = None,
         backup_entropy: bool = True,
         critic_subsample: int = 0,
+        normalize_w: bool = False,
         device: str = "cuda",
     ):
         self.cfg = dict(
@@ -165,6 +166,7 @@ class DSRLAgent:
             prop_dim=prop_dim, hidden=hidden, n_layers=n_layers, n_critics=n_critics,
             actor_lr=actor_lr, critic_lr=critic_lr, gamma=gamma, tau=tau, init_alpha=init_alpha,
             q_max=q_max, backup_entropy=backup_entropy, critic_subsample=critic_subsample,
+            normalize_w=normalize_w,
         )
         self.device = torch.device(device)
         self.gamma, self.tau = gamma, tau
@@ -173,6 +175,10 @@ class DSRLAgent:
         #   backup_entropy   False drops the entropy bonus from the target (as in RLPD's option)
         #   critic_subsample >0: target uses the min over that many randomly chosen critics (REDQ)
         self.q_max, self.backup_entropy, self.critic_subsample = q_max, backup_entropy, critic_subsample
+        #   normalize_w      the VLA only sees the direction of w (SteerablePolicy.expand rescales it to
+        #                    norm sqrt(d)); give the critic and the buffer that same rescaled w, so its
+        #                    norm is not an extra input the actor can exploit
+        self.normalize_w = normalize_w
         self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude,
                            init_std=min(1.0, 0.9 * magnitude)).to(self.device)
         make_critic = lambda: Critic(  # noqa: E731
@@ -193,6 +199,11 @@ class DSRLAgent:
         self.prop_mean = torch.as_tensor(prop.mean(0), dtype=torch.float32, device=self.device)
         self.prop_std = torch.as_tensor(prop.std(0) + 1e-3, dtype=torch.float32, device=self.device)
 
+    def norm_w(self, w: torch.Tensor) -> torch.Tensor:
+        if not self.normalize_w:
+            return w
+        return w * (w.shape[-1] ** 0.5) / w.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
     def _norm(self, prop: torch.Tensor) -> torch.Tensor:
         return ((prop - self.prop_mean) / self.prop_std).clamp(-10, 10)
 
@@ -201,7 +212,7 @@ class DSRLAgent:
         img_t = torch.from_numpy(img).to(self.device)
         prop_t = self._norm(torch.from_numpy(prop).to(self.device))
         w, _ = self.actor(img_t, prop_t, deterministic)
-        return w.cpu().numpy().astype(np.float32)
+        return self.norm_w(w).cpu().numpy().astype(np.float32)
 
     def update(self, batch: dict) -> dict:
         prop, next_prop = self._norm(batch["prop"]), self._norm(batch["next_prop"])
@@ -209,7 +220,7 @@ class DSRLAgent:
 
         with torch.no_grad():
             next_w, next_logp = self.actor(batch["next_img"], next_prop)
-            all_q = self.critic_target(batch["next_img"], next_prop, next_w)
+            all_q = self.critic_target(batch["next_img"], next_prop, self.norm_w(next_w))
             if self.critic_subsample:
                 idx = torch.randperm(all_q.shape[0], device=all_q.device)[: self.critic_subsample]
                 target_q = all_q[idx].min(0).values
@@ -227,7 +238,7 @@ class DSRLAgent:
         self.critic_opt.step()
 
         w, logp = self.actor(batch["img"], prop)
-        actor_loss = (alpha * logp - self.critic(batch["img"], prop, w).mean(0)).mean()
+        actor_loss = (alpha * logp - self.critic(batch["img"], prop, self.norm_w(w)).mean(0)).mean()
         self.actor_opt.zero_grad(set_to_none=True)
         actor_loss.backward()
         self.actor_opt.step()

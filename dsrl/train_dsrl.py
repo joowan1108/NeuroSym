@@ -48,6 +48,8 @@ def main():
     parser.add_argument("--no-entropy-backup", action="store_true", help="drop the entropy bonus from the critic target")
     parser.add_argument("--q-max", type=float, default=None, help="upper bound on the critic target (0 is exact here)")
     parser.add_argument("--critic-subsample", type=int, default=0, help="target = min over this many random critics")
+    parser.add_argument("--normalize-w", action="store_true",
+                        help="critic and buffer see w rescaled to norm sqrt(d), as the VLA does (chunk mode)")
     parser.add_argument("--buffer-size", type=int, default=40_000)
     parser.add_argument("--eval-every", type=int, default=None, help="env steps; default total/4")
     parser.add_argument("--eval-episodes", type=int, default=20)
@@ -70,6 +72,7 @@ def main():
         q_max=0.0 if args.stable else args.q_max,
         backup_entropy=not (args.stable or args.no_entropy_backup),
         critic_subsample=2 if args.stable else args.critic_subsample,
+        normalize_w=args.normalize_w,
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
     buffer = ReplayBuffer(args.buffer_size, (9, 64, 64), PROP_DIM, d)
@@ -92,6 +95,8 @@ def main():
         if state["warm"]:
             w = rng.standard_normal((len(obs), d)).astype(np.float32)
             w = np.clip(w, -args.magnitude, args.magnitude)
+            if args.normalize_w:
+                w = w * (np.sqrt(d) / np.linalg.norm(w, axis=1, keepdims=True)).astype(np.float32)
         else:
             w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]))
         return w, policy.expand(w)
