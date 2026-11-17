@@ -155,15 +155,24 @@ class DSRLAgent:
         gamma: float = 0.999,
         tau: float = 0.005,
         init_alpha: float = 0.01,
+        q_max: float | None = None,
+        backup_entropy: bool = True,
+        critic_subsample: int = 0,
         device: str = "cuda",
     ):
         self.cfg = dict(
             act_dim=act_dim, magnitude=magnitude, in_channels=in_channels, image_size=image_size,
             prop_dim=prop_dim, hidden=hidden, n_layers=n_layers, n_critics=n_critics,
             actor_lr=actor_lr, critic_lr=critic_lr, gamma=gamma, tau=tau, init_alpha=init_alpha,
+            q_max=q_max, backup_entropy=backup_entropy, critic_subsample=critic_subsample,
         )
         self.device = torch.device(device)
         self.gamma, self.tau = gamma, tau
+        # Stabilisers (all off by default = the paper's update):
+        #   q_max            upper bound on the bootstrap target; rewards are <= 0, so 0 is exact
+        #   backup_entropy   False drops the entropy bonus from the target (as in RLPD's option)
+        #   critic_subsample >0: target uses the min over that many randomly chosen critics (REDQ)
+        self.q_max, self.backup_entropy, self.critic_subsample = q_max, backup_entropy, critic_subsample
         self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude,
                            init_std=min(1.0, 0.9 * magnitude)).to(self.device)
         make_critic = lambda: Critic(  # noqa: E731
@@ -200,8 +209,17 @@ class DSRLAgent:
 
         with torch.no_grad():
             next_w, next_logp = self.actor(batch["next_img"], next_prop)
-            target_q = self.critic_target(batch["next_img"], next_prop, next_w).mean(0)
-            target = batch["rew"] + self.gamma * (1 - batch["done"]) * (target_q - alpha * next_logp)
+            all_q = self.critic_target(batch["next_img"], next_prop, next_w)
+            if self.critic_subsample:
+                idx = torch.randperm(all_q.shape[0], device=all_q.device)[: self.critic_subsample]
+                target_q = all_q[idx].min(0).values
+            else:
+                target_q = all_q.mean(0)
+            if self.backup_entropy:
+                target_q = target_q - alpha * next_logp
+            if self.q_max is not None:
+                target_q = target_q.clamp_max(self.q_max)
+            target = batch["rew"] + self.gamma * (1 - batch["done"]) * target_q
         q = self.critic(batch["img"], prop, batch["act"])
         critic_loss = ((q - target.unsqueeze(0)) ** 2).mean(1).sum()
         self.critic_opt.zero_grad(set_to_none=True)
