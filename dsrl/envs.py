@@ -46,7 +46,14 @@ def _worker(conn, cfg: dict) -> None:
         from robocasa.utils.env_utils import convert_action
 
         task = cfg["task"]
-        env = gym.make(f"robocasa/{task}", split=cfg["split"], seed=cfg["seed"])
+        if cfg.get("fixed_scene"):
+            # One kitchen (layout, style) for every episode; objects still drawn from the pretrain
+            # instances and placed by the seed. split=None, because split="pretrain" overrides the layouts.
+            layout, style = cfg["fixed_scene"]
+            env = gym.make(f"robocasa/{task}", split=None, obj_instance_split=cfg["split"],
+                           layout_and_style_ids=[(layout, style)], seed=cfg["seed"])
+        else:
+            env = gym.make(f"robocasa/{task}", split=cfg["split"], seed=cfg["seed"])
         horizon = cfg["horizon"] or int(get_task_horizon(task))
         deltas = cfg["frame_deltas"]
         size = cfg["rl_image_size"]
@@ -125,6 +132,7 @@ class EnvPool:
         frame_deltas: list[int],
         horizon: int | None = None,
         rl_image_size: int = 64,
+        fixed_scene: tuple[int, int] | None = None,
     ):
         ctx = mp.get_context("spawn")  # EGL contexts do not survive fork
         self.n = n_envs
@@ -138,6 +146,7 @@ class EnvPool:
                 horizon=horizon,
                 frame_deltas=frame_deltas,
                 rl_image_size=rl_image_size,
+                fixed_scene=fixed_scene,
             )
             proc = ctx.Process(target=_worker, args=(child, cfg), daemon=True)
             proc.start()
