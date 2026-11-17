@@ -66,6 +66,7 @@ run_task() {
     local task=$1 out="$RESULTS/$model/$1" steps_var="STEPS_$1"
     local common=(--model "$model" --task "$task" --port "$PORT" --split "$SPLIT"
                   --n-envs "$N_ENVS" --seed "$SEED" --out-dir "$out")
+    [[ -n ${FIXED_SCENE:-} ]] && common+=(--fixed-scene "$FIXED_SCENE")   # one kitchen, e.g. FIXED_SCENE=12,34
     if [[ ! -f $out/eval_base_iid.json ]]; then
         stage "$out" base_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES"
     fi
