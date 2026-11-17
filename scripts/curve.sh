@@ -10,6 +10,8 @@ MODELS="${MODELS:-xr1 rldx}"
 TASKS="${TASKS:-CoffeeSetupMug GetToastedBread SteamInMicrowave}"
 SPLIT="${SPLIT:-pretrain}"; N_ENVS="${N_ENVS:-4}"; SEED="${SEED:-7}"; PORT="${PORT:-10086}"
 CURVE_EPISODES="${CURVE_EPISODES:-50}"
+# TOP_K=n: only the n checkpoints with the best periodic (20-episode) evaluation; 0 = all of them.
+TOP_K="${TOP_K:-0}"
 RESULTS="${RESULTS:-$PROJECT/results}"
 PY="$VENVS/sim/bin/python"
 export PYTHONPATH="$PROJECT${PYTHONPATH:+:$PYTHONPATH}"
@@ -25,7 +27,24 @@ for model in $MODELS; do
     done
     for task in $TASKS; do
         out="$RESULTS/$model/$task"
-        for ckpt in $(ls "$out"/ckpt_*.pt 2>/dev/null | sort -t_ -k2 -n); do
+        if (( TOP_K > 0 )); then
+            ckpts=$("$PY" - "$out" "$TOP_K" <<'PY'
+import json, sys
+from pathlib import Path
+out, k = Path(sys.argv[1]), int(sys.argv[2])
+evals = json.loads((out / "train_summary.json").read_text())["evals"]
+ranked = sorted(evals, key=lambda e: (-e["success_rate"], e["rl_env_steps"]))
+print(" ".join(str(out / f"ckpt_{e['rl_env_steps']}.pt") for e in ranked[:k] if (out / f"ckpt_{e['rl_env_steps']}.pt").exists()))
+PY
+)
+        else
+            ckpts=$(ls "$out"/ckpt_*.pt 2>/dev/null | sort -t_ -k2 -n)
+        fi
+        for ckpt in $ckpts; do
+            # best.pt already has its 50-episode evaluation (eval_dsrl.json)
+            if [[ -f $out/best.pt && -f $out/eval_dsrl.json ]] && cmp -s "$ckpt" "$out/best.pt"; then
+                steps=$(basename "$ckpt" .pt); cp "$out/eval_dsrl.json" "$out/eval_curve_${steps#ckpt_}.json"; continue
+            fi
             steps=$(basename "$ckpt" .pt); steps=${steps#ckpt_}
             [[ -f $out/eval_curve_$steps.json ]] && continue
             "$PY" -u -m dsrl.eval --model "$model" --task "$task" --port "$PORT" --split "$SPLIT" \
