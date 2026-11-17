@@ -45,6 +45,9 @@ def main():
     parser.add_argument("--stable", action="store_true",
                         help="stabilised critic target: bounded above by 0, no entropy bonus in the backup, "
                              "min over 2 random critics (deviates from the paper's mean-of-10 target)")
+    parser.add_argument("--no-entropy-backup", action="store_true", help="drop the entropy bonus from the critic target")
+    parser.add_argument("--q-max", type=float, default=None, help="upper bound on the critic target (0 is exact here)")
+    parser.add_argument("--critic-subsample", type=int, default=0, help="target = min over this many random critics")
     parser.add_argument("--buffer-size", type=int, default=40_000)
     parser.add_argument("--eval-every", type=int, default=None, help="env steps; default total/4")
     parser.add_argument("--eval-episodes", type=int, default=20)
@@ -64,7 +67,9 @@ def main():
     agent = DSRLAgent(
         act_dim=d, magnitude=args.magnitude, hidden=args.hidden,
         n_critics=args.n_critics, gamma=args.gamma, init_alpha=args.init_alpha, device=args.device,
-        **(dict(q_max=0.0, backup_entropy=False, critic_subsample=2) if args.stable else {}),
+        q_max=0.0 if args.stable else args.q_max,
+        backup_entropy=not (args.stable or args.no_entropy_backup),
+        critic_subsample=2 if args.stable else args.critic_subsample,
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
     buffer = ReplayBuffer(args.buffer_size, (9, 64, 64), PROP_DIM, d)
