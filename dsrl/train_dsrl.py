@@ -180,6 +180,7 @@ def main():
             best_so_far = max((e["success_rate"] for e in evals), default=-1.0)
             evals.append(result)
             agent.save(out / "last.pt")
+            agent.save(out / f"ckpt_{stats['env_steps']}.pt")  # kept for learning curves (scripts/curve.sh)
             if result["success_rate"] > best_so_far:
                 agent.save(out / "best.pt")
             print(
