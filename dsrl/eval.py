@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--agent", default="none")
     parser.add_argument("--noise", default="iid", choices=("iid", "repeat"))
     parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument("--stochastic", action="store_true",
+                        help="sample w from the steering policy instead of using its mean (as during training)")
     parser.add_argument("--tag", default=None, help="output file stem; default base_<noise> / dsrl")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -41,10 +43,11 @@ def main():
         policy.noise_mode = agent.noise_mode or ("chunk" if agent.cfg["act_dim"] > policy.step_dim else "repeat")
 
         def choose(obs):
-            w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]), deterministic=True)
+            w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]),
+                          deterministic=not args.stochastic)
             return w, policy.expand(w)
 
-        tag = args.tag or "dsrl"
+        tag = args.tag or ("dsrl_stochastic" if args.stochastic else "dsrl")
     elif args.noise == "iid":
         choose = lambda obs: (None, policy.iid_noise(len(obs), rng))  # noqa: E731
         tag = args.tag or "base_iid"
