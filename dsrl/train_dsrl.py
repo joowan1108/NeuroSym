@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--no-entropy-backup", action="store_true", help="drop the entropy bonus from the critic target")
     parser.add_argument("--q-max", type=float, default=None, help="upper bound on the critic target (0 is exact here)")
     parser.add_argument("--critic-subsample", type=int, default=0, help="target = min over this many random critics")
+    parser.add_argument("--fixed-alpha", action="store_true",
+                        help="keep alpha at --init-alpha (no automatic tuning); the entropy bonus then only acts on the actor\n"
+                             "when --no-entropy-backup is set")
     parser.add_argument("--normalize-w", action="store_true",
                         help="critic and buffer see w rescaled to norm sqrt(d), as the VLA does (chunk mode)")
     parser.add_argument("--buffer-size", type=int, default=40_000)
@@ -73,6 +76,7 @@ def main():
         backup_entropy=not (args.stable or args.no_entropy_backup),
         critic_subsample=2 if args.stable else args.critic_subsample,
         normalize_w=args.normalize_w,
+        fixed_alpha=args.fixed_alpha,
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
     buffer = ReplayBuffer(args.buffer_size, (9, 64, 64), PROP_DIM, d)
@@ -140,7 +144,7 @@ def main():
             print(
                 f"[train] steps={stats['env_steps']} ep={stats['episodes']} "
                 f"recent_sr={np.mean(recent) if recent else 0:.2f} q={info['q']:.2f} "
-                f"alpha={info['alpha']:.3f} critic_loss={info['critic_loss']:.4f} actor_loss={info['actor_loss']:.3f} "
+                f"alpha={info['alpha']:.4f} entropy={info['entropy']:.1f} critic_loss={info['critic_loss']:.4f} actor_loss={info['actor_loss']:.3f} "
                 f"rl_time={stats['rl_time_live']():.0f}s", flush=True,
             )
 

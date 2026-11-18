@@ -159,6 +159,7 @@ class DSRLAgent:
         backup_entropy: bool = True,
         critic_subsample: int = 0,
         normalize_w: bool = False,
+        fixed_alpha: bool = False,
         device: str = "cuda",
     ):
         self.cfg = dict(
@@ -166,7 +167,7 @@ class DSRLAgent:
             prop_dim=prop_dim, hidden=hidden, n_layers=n_layers, n_critics=n_critics,
             actor_lr=actor_lr, critic_lr=critic_lr, gamma=gamma, tau=tau, init_alpha=init_alpha,
             q_max=q_max, backup_entropy=backup_entropy, critic_subsample=critic_subsample,
-            normalize_w=normalize_w,
+            normalize_w=normalize_w, fixed_alpha=fixed_alpha,
         )
         self.device = torch.device(device)
         self.gamma, self.tau = gamma, tau
@@ -179,6 +180,8 @@ class DSRLAgent:
         #                    norm sqrt(d)); give the critic and the buffer that same rescaled w, so its
         #                    norm is not an extra input the actor can exploit
         self.normalize_w = normalize_w
+        #   fixed_alpha      keep the entropy weight at init_alpha instead of tuning it towards -d/2
+        self.fixed_alpha = fixed_alpha
         self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude,
                            init_std=min(1.0, 0.9 * magnitude)).to(self.device)
         make_critic = lambda: Critic(  # noqa: E731
@@ -243,10 +246,11 @@ class DSRLAgent:
         actor_loss.backward()
         self.actor_opt.step()
 
-        alpha_loss = -(self.log_alpha * (logp.detach() + self.target_entropy).mean())
-        self.alpha_opt.zero_grad(set_to_none=True)
-        alpha_loss.backward()
-        self.alpha_opt.step()
+        if not self.fixed_alpha:
+            alpha_loss = -(self.log_alpha * (logp.detach() + self.target_entropy).mean())
+            self.alpha_opt.zero_grad(set_to_none=True)
+            alpha_loss.backward()
+            self.alpha_opt.step()
 
         with torch.no_grad():
             for p, tp in zip(self.critic.parameters(), self.critic_target.parameters()):
@@ -254,7 +258,7 @@ class DSRLAgent:
         self.grad_steps += 1
         return dict(
             critic_loss=float(critic_loss), actor_loss=float(actor_loss),
-            alpha=float(alpha), q=float(q.mean()),
+            alpha=float(alpha), q=float(q.mean()), entropy=float(-logp.detach().mean()),
         )
 
     def save(self, path) -> None:
