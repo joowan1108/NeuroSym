@@ -22,7 +22,12 @@ class Encoder(nn.Module):
         super().__init__()
         layers, c = [], in_channels
         for i, f in enumerate(features):
-            layers += [nn.Conv2d(c, f, 3, stride=2 if i < 3 else 1), nn.ReLU()]
+            if i == 0 and image_size >= 128:
+                # Full-resolution input (RoboCasa renders 256x256): a learned 8x8/stride-4 first layer sees every
+                # pixel but costs ~1/3 of the 64x64-sized 3x3/stride-2 stack applied at this size.
+                layers += [nn.Conv2d(c, f, 8, stride=4), nn.ReLU()]
+            else:
+                layers += [nn.Conv2d(c, f, 3, stride=2 if i < 3 else 1), nn.ReLU()]
             c = f
         self.convs = nn.Sequential(*layers)
         with torch.no_grad():

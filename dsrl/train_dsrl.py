@@ -16,6 +16,7 @@ import argparse
 import json
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -86,6 +87,7 @@ def main():
         image_size=args.rl_image_size, per_camera=args.per_camera,
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
+    sampler = ThreadPoolExecutor(max_workers=1)
     buffer = ReplayBuffer(args.buffer_size, (9, args.rl_image_size, args.rl_image_size), PROP_DIM, d)
     eval_every = args.eval_every or max(1, args.total_env_steps // 4)
     # Periodic evaluations pick best.pt; they use their own scenes so that the final evaluation
@@ -146,8 +148,14 @@ def main():
         tic = time.time()
         info = {}
         n_updates = int(stats["pending_updates"])
-        for _ in range(n_updates):
-            info = agent.update(buffer.sample(args.batch_size, agent.device))
+        # the next batch is gathered from the replay buffer while the GPU updates on the current one
+        if n_updates:
+            future = sampler.submit(buffer.sample, args.batch_size, agent.device)
+            for k in range(n_updates):
+                batch = future.result()
+                if k + 1 < n_updates:
+                    future = sampler.submit(buffer.sample, args.batch_size, agent.device)
+                info = agent.update(batch)
         stats["pending_updates"] -= n_updates
         stats["update_time"] += time.time() - tic
         if info and stats["decisions"] % 50 < pool.n:
