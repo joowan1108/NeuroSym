@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 
 LOG_STD_MIN, LOG_STD_MAX = -5.0, 2.0
 
@@ -22,13 +23,11 @@ class Encoder(nn.Module):
         super().__init__()
         layers, c = [], in_channels
         for i, f in enumerate(features):
-            if i == 0 and image_size >= 128:
-                # Full-resolution input (RoboCasa renders 256x256): a learned 8x8/stride-4 first layer sees every
-                # pixel but costs ~1/3 of the 64x64-sized 3x3/stride-2 stack applied at this size.
-                layers += [nn.Conv2d(c, f, 8, stride=4), nn.ReLU()]
-            else:
-                layers += [nn.Conv2d(c, f, 3, stride=2 if i < 3 else 1), nn.ReLU()]
+            layers += [nn.Conv2d(c, f, 3, stride=2 if i < 3 else 1), nn.ReLU()]
             c = f
+        # Full-resolution inputs (RoboCasa renders 256x256): recompute the conv activations in the backward pass
+        # instead of storing them. Same result, less GPU memory (the policy server and the simulators share the GPU).
+        self.checkpoint = image_size >= 128
         self.convs = nn.Sequential(*layers)
         with torch.no_grad():
             flat = self.convs(torch.zeros(1, in_channels, image_size, image_size)).flatten(1).shape[1]
@@ -37,7 +36,11 @@ class Encoder(nn.Module):
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         x = img.float() / 255.0 - 0.5
-        return self.head(self.convs(x).flatten(1))
+        if self.checkpoint and torch.is_grad_enabled():
+            x = torch.utils.checkpoint.checkpoint(self.convs, x, use_reentrant=False)
+        else:
+            x = self.convs(x)
+        return self.head(x.flatten(1))
 
 
 class EnsembleLinear(nn.Module):
