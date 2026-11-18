@@ -28,6 +28,9 @@ class SteerablePolicy:
         self.frame_deltas = [int(d) for d in self.info["frame_deltas"]]
         self.default_exec_steps = int(self.info["default_exec_steps"])
         self.rng = np.random.default_rng(seed)
+        # Non-steered (padding) dims get ONE fixed standard-normal sample for the whole run, so that a chosen w
+        # always gives the same action: RLDX-1 feeds its padding dims to the model (XR-1 masks them out).
+        self.pad_noise = np.random.default_rng(seed + 12345).standard_normal((self.horizon, self.dim)).astype(np.float32)
         self.infer_time = 0.0
         self.n_queries = 0
 
@@ -54,7 +57,7 @@ class SteerablePolicy:
         The rescaling keeps the noise at the radius where N(0, I) concentrates. The flow model
         only ever saw noise of that norm: with small-norm noise XR-1 drops from 50% to 15-20%
         success, and SAC shrinks its noise towards the mean as it becomes confident."""
-        noise = self.rng.standard_normal((w.shape[0], self.horizon, self.dim)).astype(np.float32)
+        noise = np.repeat(self.pad_noise[None], w.shape[0], axis=0)
         if self.noise_mode != "repeat":
             w = w * (np.sqrt(w.shape[1]) / np.maximum(np.linalg.norm(w, axis=1, keepdims=True), 1e-6))
         if w.shape[1] == self.step_dim:
