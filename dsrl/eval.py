@@ -30,6 +30,9 @@ def main():
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
+    if args.agent != "none":   # the policy's image size comes from its checkpoint
+        import torch
+        args.rl_image_size = int(torch.load(args.agent, map_location="cpu")["cfg"].get("image_size", 64))
     policy, pool, exec_steps = connect(args)
     rng = np.random.default_rng(args.seed)
 

@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--fixed-alpha", action="store_true",
                         help="keep alpha at --init-alpha (no automatic tuning); the entropy bonus then only acts on the actor\n"
                              "when --no-entropy-backup is set")
+    parser.add_argument("--per-camera", action="store_true", help="separate conv encoder for each camera")
     parser.add_argument("--normalize-w", action="store_true",
                         help="critic and buffer see w rescaled to norm sqrt(d), as the VLA does (chunk mode)")
     parser.add_argument("--buffer-size", type=int, default=40_000)
@@ -82,9 +83,10 @@ def main():
         critic_subsample=2 if args.stable else args.critic_subsample,
         normalize_w=args.normalize_w,
         fixed_alpha=args.fixed_alpha,
+        image_size=args.rl_image_size, per_camera=args.per_camera,
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
-    buffer = ReplayBuffer(args.buffer_size, (9, 64, 64), PROP_DIM, d)
+    buffer = ReplayBuffer(args.buffer_size, (9, args.rl_image_size, args.rl_image_size), PROP_DIM, d)
     eval_every = args.eval_every or max(1, args.total_env_steps // 4)
     # Periodic evaluations pick best.pt; they use their own scenes so that the final evaluation
     # (EVAL_SEED_OFFSET scenes, shared with the base policy) is not biased by that choice.

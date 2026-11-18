@@ -28,6 +28,8 @@ def add_common_args(parser) -> None:
     parser.add_argument("--horizon", type=int, default=None, help="default: robocasa get_task_horizon")
     parser.add_argument("--exec-steps", type=int, default=None, help="actions executed per query")
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--rl-image-size", type=int, default=64,
+                        help="side of the camera images given to the steering policy (RoboCasa renders 256)")
     parser.add_argument("--fixed-scene", default=None, metavar="LAYOUT,STYLE",
                         help="use one kitchen for every episode (objects and placements still vary by seed)")
 
@@ -46,6 +48,7 @@ def connect(args) -> tuple[SteerablePolicy, EnvPool, int]:
         seed=args.seed,
         frame_deltas=policy.frame_deltas,
         horizon=args.horizon,
+        rl_image_size=args.rl_image_size,
         fixed_scene=tuple(int(x) for x in args.fixed_scene.split(",")) if args.fixed_scene else None,
     )
     return policy, pool, exec_steps

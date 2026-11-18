@@ -47,13 +47,30 @@ class EnsembleLinear(nn.Module):
         return torch.baddbmm(self.bias, x, self.weight)
 
 
+class MultiCamEncoder(nn.Module):
+    """One conv encoder per camera (3 channels each); their features are concatenated."""
+
+    def __init__(self, in_channels: int, image_size: int):
+        super().__init__()
+        assert in_channels % 3 == 0
+        self.encoders = nn.ModuleList(Encoder(3, image_size) for _ in range(in_channels // 3))
+        self.out_dim = sum(e.out_dim for e in self.encoders)
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        return torch.cat([e(img[:, 3 * i: 3 * i + 3]) for i, e in enumerate(self.encoders)], dim=-1)
+
+
+def make_encoder(in_channels: int, image_size: int, per_camera: bool) -> nn.Module:
+    return MultiCamEncoder(in_channels, image_size) if per_camera else Encoder(in_channels, image_size)
+
+
 class Critic(nn.Module):
     """Q^W(s, w): shared conv encoder + ensemble of MLP heads."""
 
-    def __init__(self, n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers):
+    def __init__(self, n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, per_camera=False):
         super().__init__()
         self.n = n_critics
-        self.encoder = Encoder(in_channels, image_size)
+        self.encoder = make_encoder(in_channels, image_size, per_camera)
         dims = [self.encoder.out_dim + prop_dim + act_dim] + [hidden] * n_layers
         self.layers = nn.ModuleList(EnsembleLinear(n_critics, a, b) for a, b in zip(dims[:-1], dims[1:]))
         self.out = EnsembleLinear(n_critics, hidden, 1)
@@ -70,9 +87,10 @@ class Critic(nn.Module):
 class Actor(nn.Module):
     """pi^W(w | s): tanh-Gaussian scaled to the action magnitude b_W."""
 
-    def __init__(self, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude, init_std=1.0):
+    def __init__(self, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude, init_std=1.0,
+                 per_camera=False):
         super().__init__()
-        self.encoder = Encoder(in_channels, image_size)
+        self.encoder = make_encoder(in_channels, image_size, per_camera)
         layers, d = [], self.encoder.out_dim + prop_dim
         for _ in range(n_layers):
             layers += [nn.Linear(d, hidden), nn.LayerNorm(hidden), nn.ReLU()]
@@ -160,6 +178,7 @@ class DSRLAgent:
         critic_subsample: int = 0,
         normalize_w: bool = False,
         fixed_alpha: bool = False,
+        per_camera: bool = False,
         device: str = "cuda",
     ):
         self.cfg = dict(
@@ -167,7 +186,7 @@ class DSRLAgent:
             prop_dim=prop_dim, hidden=hidden, n_layers=n_layers, n_critics=n_critics,
             actor_lr=actor_lr, critic_lr=critic_lr, gamma=gamma, tau=tau, init_alpha=init_alpha,
             q_max=q_max, backup_entropy=backup_entropy, critic_subsample=critic_subsample,
-            normalize_w=normalize_w, fixed_alpha=fixed_alpha,
+            normalize_w=normalize_w, fixed_alpha=fixed_alpha, per_camera=per_camera,
         )
         self.device = torch.device(device)
         self.gamma, self.tau = gamma, tau
@@ -183,9 +202,9 @@ class DSRLAgent:
         #   fixed_alpha      keep the entropy weight at init_alpha instead of tuning it towards -d/2
         self.fixed_alpha = fixed_alpha
         self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude,
-                           init_std=min(1.0, 0.9 * magnitude)).to(self.device)
+                           init_std=min(1.0, 0.9 * magnitude), per_camera=per_camera).to(self.device)
         make_critic = lambda: Critic(  # noqa: E731
-            n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers
+            n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, per_camera
         ).to(self.device)
         self.critic, self.critic_target = make_critic(), make_critic()
         self.critic_target.load_state_dict(self.critic.state_dict())
