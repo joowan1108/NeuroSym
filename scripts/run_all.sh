@@ -86,6 +86,11 @@ run_task() {
         stage "$out" dsrl_eval_last "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
             --agent "$out/last.pt" --tag dsrl_last
     fi
+    # EVAL_STOCHASTIC=1: also evaluate the final checkpoint with sampled steering noise (as during training)
+    if [[ ${EVAL_STOCHASTIC:-0} == 1 && ! -f $out/eval_dsrl_last_stochastic.json ]]; then
+        stage "$out" dsrl_eval_last_stochastic "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
+            --agent "$out/last.pt" --stochastic --tag dsrl_last_stochastic
+    fi
 }
 
 mkdir -p "$RESULTS"
