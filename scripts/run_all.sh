@@ -80,6 +80,12 @@ run_task() {
         stage "$out" dsrl_eval "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
             --agent "$out/best.pt"
     fi
+    # EVAL_LAST=1: also evaluate the final checkpoint (the periodic 20-episode evaluations that pick best.pt
+    # are noisy and share their scenes with this evaluation)
+    if [[ ${EVAL_LAST:-0} == 1 && ! -f $out/eval_dsrl_last.json ]]; then
+        stage "$out" dsrl_eval_last "$PY" -u -m dsrl.eval "${common[@]}" --episodes "$EVAL_EPISODES" \
+            --agent "$out/last.pt" --tag dsrl_last
+    fi
 }
 
 mkdir -p "$RESULTS"

@@ -32,7 +32,12 @@ def main():
     add_common_args(parser)
     parser.add_argument("--total-env-steps", type=int, required=True)
     parser.add_argument("--warmup-episodes", type=int, default=8, help="base-policy rollouts with w~N(0,I)")
-    parser.add_argument("--utd", type=int, default=20, help="gradient steps per decision")
+    parser.add_argument("--warmup-steps", type=int, default=0,
+                        help="also roll out the base policy until this many env steps (DSRL tables: 'initial steps')")
+    parser.add_argument("--utd", type=int, default=20, help="gradient steps per update")
+    parser.add_argument("--utd-per", default="transition", choices=("transition", "parallel-step"),
+                        help="transition: --utd steps per collected transition; parallel-step: --utd steps per step of "
+                             "all parallel envs, i.e. --utd / n-envs per transition (DSRL appendix C.1)")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--noise-mode", default="chunk", choices=("chunk", "repeat", "repeat_norm"),
                         help="chunk: steer the whole chunk noise; repeat: one step noise repeated (pi_0 trick)")
@@ -117,13 +122,13 @@ def main():
         stats["env_steps"] += result["n_steps"]
         stats["decisions"] += 1
         stats["sim_time"] += result["sim_time"]
-        stats["pending_updates"] += args.utd
+        stats["pending_updates"] += args.utd if args.utd_per == "transition" else args.utd / pool.n
 
     def on_episode(ep):
         stats["episodes"] += 1
         stats["successes"] += int(ep["success"])
         recent.append(ep["success"])
-        if state["warm"] and stats["episodes"] >= args.warmup_episodes:
+        if state["warm"] and stats["episodes"] >= args.warmup_episodes and stats["env_steps"] >= args.warmup_steps:
             agent.set_prop_stats(buffer.prop[: buffer.size])
             state["warm"] = False
             stats["pending_updates"] = 0
@@ -136,9 +141,10 @@ def main():
             return
         tic = time.time()
         info = {}
-        for _ in range(stats["pending_updates"]):
+        n_updates = int(stats["pending_updates"])
+        for _ in range(n_updates):
             info = agent.update(buffer.sample(args.batch_size, agent.device))
-        stats["pending_updates"] = 0
+        stats["pending_updates"] -= n_updates
         stats["update_time"] += time.time() - tic
         if info and stats["decisions"] % 50 < pool.n:
             print(
