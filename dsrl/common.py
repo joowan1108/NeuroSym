@@ -14,6 +14,7 @@ from dsrl.rollout import run_episodes
 
 TASKS = ("CoffeeSetupMug", "GetToastedBread", "SteamInMicrowave")
 EVAL_SEED_OFFSET = 1_000_000  # evaluation scenes never overlap with training seeds
+PERIODIC_EVAL_SEED_OFFSET = 2_000_000  # periodic (checkpoint-selection) scenes never overlap with the final evaluation
 
 
 def add_common_args(parser) -> None:

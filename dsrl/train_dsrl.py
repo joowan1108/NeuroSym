@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dsrl.common import EVAL_SEED_OFFSET, add_common_args, connect, evaluate, seed_stream, write_json
+from dsrl.common import PERIODIC_EVAL_SEED_OFFSET, add_common_args, connect, evaluate, seed_stream, write_json
 from dsrl.envs import PROP_DIM
 from dsrl.rollout import run_episodes
 from dsrl.sac import DSRLAgent, ReplayBuffer
@@ -86,7 +86,9 @@ def main():
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
     buffer = ReplayBuffer(args.buffer_size, (9, 64, 64), PROP_DIM, d)
     eval_every = args.eval_every or max(1, args.total_env_steps // 4)
-    eval_seeds = [args.seed + EVAL_SEED_OFFSET + i for i in range(args.eval_episodes)]
+    # Periodic evaluations pick best.pt; they use their own scenes so that the final evaluation
+    # (EVAL_SEED_OFFSET scenes, shared with the base policy) is not biased by that choice.
+    eval_seeds = [args.seed + PERIODIC_EVAL_SEED_OFFSET + i for i in range(args.eval_episodes)]
     print(
         f"[train] {args.model}/{args.task}: horizon={pool.horizon} exec_steps={exec_steps} "
         f"latent dim={d} ({args.noise_mode}; noise {policy.horizon}x{policy.dim})", flush=True,
