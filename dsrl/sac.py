@@ -83,13 +83,32 @@ class Critic(nn.Module):
         self.layers = nn.ModuleList(EnsembleLinear(n_critics, a, b) for a, b in zip(dims[:-1], dims[1:]))
         self.out = EnsembleLinear(n_critics, hidden, 1)
 
-    def forward(self, img, prop, act) -> torch.Tensor:  # (n, B)
-        x = torch.cat([self.encoder(img), prop, act], dim=-1)
+    def forward(self, img, prop, act, encoder_grad: bool = True) -> torch.Tensor:  # (n, B)
+        if encoder_grad:
+            feat = self.encoder(img)
+        else:
+            with torch.no_grad():
+                feat = self.encoder(img)
+        x = torch.cat([feat, prop, act], dim=-1)
         x = x.unsqueeze(0).expand(self.n, -1, -1)
         for layer in self.layers:
             x = layer(x)
             x = F.relu(F.layer_norm(x, x.shape[-1:]))
         return self.out(x).squeeze(-1)
+
+
+class IndependentCritics(nn.Module):
+    """n critics that share nothing, each with its own image encoder. forward -> (n, B)."""
+
+    def __init__(self, n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, per_camera=False):
+        super().__init__()
+        self.n = n_critics
+        self.critics = nn.ModuleList(
+            Critic(1, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, per_camera) for _ in range(n_critics)
+        )
+
+    def forward(self, img, prop, act, encoder_grad: bool = True) -> torch.Tensor:
+        return torch.cat([c(img, prop, act, encoder_grad) for c in self.critics], dim=0)
 
 
 class Actor(nn.Module):
@@ -148,11 +167,13 @@ class ReplayBuffer:
         self.act = np.zeros((capacity, act_dim), np.float32)
         self.rew = np.zeros((capacity,), np.float32)
         self.done = np.zeros((capacity,), np.float32)
+        self.disc = np.zeros((capacity,), np.float32)  # discount applied to the bootstrap (gamma^m for m steps)
 
-    def add(self, img, prop, act, rew, next_img, next_prop, done) -> None:
+    def add(self, img, prop, act, rew, next_img, next_prop, done, disc) -> None:
         i = self.ptr
         self.img[i], self.prop[i], self.act[i] = img, prop, act
         self.rew[i], self.next_img[i], self.next_prop[i], self.done[i] = rew, next_img, next_prop, done
+        self.disc[i] = disc
         self.ptr = (i + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -161,7 +182,7 @@ class ReplayBuffer:
         to = lambda a: torch.from_numpy(a[idx]).to(device, non_blocking=True)  # noqa: E731
         return dict(
             img=to(self.img), prop=to(self.prop), act=to(self.act), rew=to(self.rew),
-            next_img=to(self.next_img), next_prop=to(self.next_prop), done=to(self.done),
+            next_img=to(self.next_img), next_prop=to(self.next_prop), done=to(self.done), disc=to(self.disc),
         )
 
 
@@ -187,6 +208,7 @@ class DSRLAgent:
         normalize_w: bool = False,
         fixed_alpha: bool = False,
         per_camera: bool = False,
+        independent_critics: bool = False,
         device: str = "cuda",
     ):
         self.cfg = dict(
@@ -195,6 +217,7 @@ class DSRLAgent:
             actor_lr=actor_lr, critic_lr=critic_lr, gamma=gamma, tau=tau, init_alpha=init_alpha,
             q_max=q_max, backup_entropy=backup_entropy, critic_subsample=critic_subsample,
             normalize_w=normalize_w, fixed_alpha=fixed_alpha, per_camera=per_camera,
+            independent_critics=independent_critics,
         )
         self.device = torch.device(device)
         self.gamma, self.tau = gamma, tau
@@ -211,7 +234,11 @@ class DSRLAgent:
         self.fixed_alpha = fixed_alpha
         self.actor = Actor(in_channels, image_size, prop_dim, act_dim, hidden, n_layers, magnitude,
                            init_std=min(1.0, 0.9 * magnitude), per_camera=per_camera).to(self.device)
-        make_critic = lambda: Critic(  # noqa: E731
+        #   independent_critics  critics with separate encoders; the target and the actor then use the MIN over
+        #                        them (clipped double Q), so one critic's optimism on unseen noise is filtered out
+        self.independent_critics = independent_critics
+        critic_cls = IndependentCritics if independent_critics else Critic
+        make_critic = lambda: critic_cls(  # noqa: E731
             n_critics, in_channels, image_size, prop_dim, act_dim, hidden, n_layers, per_camera
         ).to(self.device)
         self.critic, self.critic_target = make_critic(), make_critic()
@@ -251,7 +278,9 @@ class DSRLAgent:
         with torch.no_grad():
             next_w, next_logp = self.actor(batch["next_img"], next_prop)
             all_q = self.critic_target(batch["next_img"], next_prop, self.norm_w(next_w))
-            if self.critic_subsample:
+            if self.independent_critics:
+                target_q = all_q.min(0).values
+            elif self.critic_subsample:
                 idx = torch.randperm(all_q.shape[0], device=all_q.device)[: self.critic_subsample]
                 target_q = all_q[idx].min(0).values
             else:
@@ -260,7 +289,7 @@ class DSRLAgent:
                 target_q = target_q - alpha * next_logp
             if self.q_max is not None:
                 target_q = target_q.clamp_max(self.q_max)
-            target = batch["rew"] + self.gamma * (1 - batch["done"]) * target_q
+            target = batch["rew"] + batch["disc"] * (1 - batch["done"]) * target_q
         q = self.critic(batch["img"], prop, batch["act"])
         critic_loss = ((q - target.unsqueeze(0)) ** 2).mean(1).sum()
         self.critic_opt.zero_grad(set_to_none=True)
@@ -268,7 +297,10 @@ class DSRLAgent:
         self.critic_opt.step()
 
         w, logp = self.actor(batch["img"], prop)
-        actor_loss = (alpha * logp - self.critic(batch["img"], prop, self.norm_w(w)).mean(0)).mean()
+        # (the critic's encoder gradients from this loss were discarded anyway: the critic optimiser zeroes them)
+        q_pi = self.critic(batch["img"], prop, self.norm_w(w), encoder_grad=False)
+        q_pi = q_pi.min(0).values if self.independent_critics else q_pi.mean(0)
+        actor_loss = (alpha * logp - q_pi).mean()
         self.actor_opt.zero_grad(set_to_none=True)
         actor_loss.backward()
         self.actor_opt.step()

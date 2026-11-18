@@ -61,6 +61,10 @@ def main():
                         help="keep alpha at --init-alpha (no automatic tuning); the entropy bonus then only acts on the actor\n"
                              "when --no-entropy-backup is set")
     parser.add_argument("--per-camera", action="store_true", help="separate conv encoder for each camera")
+    parser.add_argument("--n-step", type=int, default=1,
+                        help="critic target = n real rewards + discounted bootstrap (1 = one-step TD, as in the paper)")
+    parser.add_argument("--independent-critics", action="store_true",
+                        help="critics with separate encoders, min over them for target and actor (use --n-critics 2)")
     parser.add_argument("--normalize-w", action="store_true",
                         help="critic and buffer see w rescaled to norm sqrt(d), as the VLA does (chunk mode)")
     parser.add_argument("--buffer-size", type=int, default=40_000)
@@ -89,6 +93,7 @@ def main():
         critic_subsample=2 if args.stable else args.critic_subsample,
         normalize_w=args.normalize_w,
         fixed_alpha=args.fixed_alpha,
+        independent_critics=args.independent_critics,
         image_size=args.rl_image_size, per_camera=args.per_camera,
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
@@ -125,11 +130,27 @@ def main():
         w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]), deterministic=True)
         return w, policy.expand(w)
 
-    def on_step(obs, w, result):
+    pending: dict[int, deque] = {}
+
+    def on_step(obs, w, result, env):
         # Sparse reward of the paper's pi_0 experiments: -1 until success, then 0 (terminal).
+        # With --n-step n, each stored transition sums up to n real rewards and bootstraps with gamma^m.
         success = result["success"]
-        buffer.add(obs["img"], obs["prop"], w, 0.0 if success else -1.0,
-                   result["img"], result["prop"], float(success))
+        q = pending.setdefault(env, deque())
+        q.append((obs["img"], obs["prop"], w, 0.0 if success else -1.0))
+        end = success or result["timeout"]
+
+        def emit():
+            img0, prop0, w0, _ = q[0]
+            ret = sum(args.gamma ** k * r for k, (_, _, _, r) in enumerate(q))
+            buffer.add(img0, prop0, w0, ret, result["img"], result["prop"], float(success), args.gamma ** len(q))
+            q.popleft()
+
+        if end:
+            while q:
+                emit()
+        elif len(q) >= args.n_step:
+            emit()
         stats["env_steps"] += result["n_steps"]
         stats["decisions"] += 1
         stats["sim_time"] += result["sim_time"]
@@ -202,6 +223,7 @@ def main():
         while stats["env_steps"] < args.total_env_steps:
             state["limit"] = min(args.total_env_steps, next_eval)
             segment_start[0] = time.time()
+            pending.clear()   # partial n-step windows of episodes abandoned at the last evaluation
             run_episodes(
                 pool, policy, exec_steps,
                 next_seed=seed_stream(train_seed), choose_noise=choose_train,

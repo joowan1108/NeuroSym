@@ -36,7 +36,7 @@ def run_episodes(
     """Runs until `next_seed` is exhausted or `stop()` is true.
 
     choose_noise(obs_list) -> (w or None, noise[B, H, D]).
-    on_step(obs, w, result) is called once per finished decision.
+    on_step(obs, w, result, env_index) is called once per finished decision.
     Episodes still in progress when `stop()` fires are abandoned.
     """
     pool.drain()
@@ -80,7 +80,7 @@ def run_episodes(
             ep["steps"] += data["n_steps"]
             ep["decisions"] += 1
             if on_step is not None:
-                on_step(sent["obs"], sent["w"], data)
+                on_step(sent["obs"], sent["w"], data, i)
             if data["success"] or data["timeout"]:
                 if on_episode is not None:
                     on_episode(
