@@ -67,8 +67,11 @@ def run_episodes(
             )
             for j, i in enumerate(ids):
                 episodes[i]["first"] = False
-                inflight[i] = dict(obs=obs[j], w=None if w is None else w[j])
-                pool.send_step(i, actions[j, :exec_steps])
+                # actions (B, H, A), or (B, M, H, A) when several noises were queried per observation
+                # (DSRL-NA): the first one is executed, all of them are handed to on_step.
+                multi = actions.ndim == 4
+                inflight[i] = dict(obs=obs[j], w=None if w is None else w[j], acts=actions[j] if multi else None)
+                pool.send_step(i, actions[j, 0, :exec_steps] if multi else actions[j, :exec_steps])
         if not pool.busy:
             break
         for i, kind, data in pool.recv():
@@ -80,6 +83,8 @@ def run_episodes(
             ep["steps"] += data["n_steps"]
             ep["decisions"] += 1
             if on_step is not None:
+                if sent["acts"] is not None:
+                    data = dict(data, vla_actions=sent["acts"])
                 on_step(sent["obs"], sent["w"], data, i)
             if data["success"] or data["timeout"]:
                 if on_episode is not None:

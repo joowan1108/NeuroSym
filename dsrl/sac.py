@@ -83,6 +83,17 @@ class Critic(nn.Module):
         self.layers = nn.ModuleList(EnsembleLinear(n_critics, a, b) for a, b in zip(dims[:-1], dims[1:]))
         self.out = EnsembleLinear(n_critics, hidden, 1)
 
+    def features(self, img):
+        return self.encoder(img)
+
+    def heads(self, feat, prop, act) -> torch.Tensor:  # (n, B)
+        x = torch.cat([feat, prop, act], dim=-1)
+        x = x.unsqueeze(0).expand(self.n, -1, -1)
+        for layer in self.layers:
+            x = layer(x)
+            x = F.relu(F.layer_norm(x, x.shape[-1:]))
+        return self.out(x).squeeze(-1)
+
     def forward(self, img, prop, act, encoder_grad: bool = True) -> torch.Tensor:  # (n, B)
         if encoder_grad:
             feat = self.encoder(img)
@@ -109,6 +120,12 @@ class IndependentCritics(nn.Module):
 
     def forward(self, img, prop, act, encoder_grad: bool = True) -> torch.Tensor:
         return torch.cat([c(img, prop, act, encoder_grad) for c in self.critics], dim=0)
+
+    def features(self, img):
+        return [c.features(img) for c in self.critics]
+
+    def heads(self, feat, prop, act) -> torch.Tensor:
+        return torch.cat([c.heads(f, prop, act) for c, f in zip(self.critics, feat)], dim=0)
 
 
 class Actor(nn.Module):
@@ -183,6 +200,30 @@ class ReplayBuffer:
         return dict(
             img=to(self.img), prop=to(self.prop), act=to(self.act), rew=to(self.rew),
             next_img=to(self.next_img), next_prop=to(self.next_prop), done=to(self.done), disc=to(self.disc),
+        )
+
+
+class NAReplayBuffer(ReplayBuffer):
+    """ReplayBuffer + for every stored state M (noise, executed action chunk) pairs produced by the VLA at that
+    state: index 0 is the noise actually played, 1..M-1 are w ~ N(0, I) (DSRL-NA)."""
+
+    def __init__(self, capacity, img_shape, prop_dim, act_dim, n_alias, action_dim_a):
+        super().__init__(capacity, img_shape, prop_dim, act_dim)
+        self.alias_w = np.zeros((capacity, n_alias, act_dim), np.float32)
+        self.alias_a = np.zeros((capacity, n_alias, action_dim_a), np.float32)
+
+    def add(self, img, prop, act, rew, next_img, next_prop, done, disc, alias_w=None, alias_a=None) -> None:
+        i = self.ptr
+        self.alias_w[i], self.alias_a[i] = alias_w, alias_a
+        super().add(img, prop, act, rew, next_img, next_prop, done, disc)
+
+    def sample(self, batch_size: int, device) -> dict:
+        idx = np.random.randint(0, self.size, size=batch_size)
+        to = lambda a: torch.from_numpy(a[idx]).to(device, non_blocking=True)  # noqa: E731
+        return dict(
+            img=to(self.img), prop=to(self.prop), act=to(self.act), rew=to(self.rew),
+            next_img=to(self.next_img), next_prop=to(self.next_prop), done=to(self.done), disc=to(self.disc),
+            alias_w=to(self.alias_w), alias_a=to(self.alias_a),
         )
 
 
@@ -339,7 +380,11 @@ class DSRLAgent:
     @classmethod
     def load(cls, path, device: str = "cuda") -> "DSRLAgent":
         ckpt = torch.load(path, map_location="cpu")
-        agent = cls(**ckpt["cfg"], device=device)
+        klass = DSRLNAAgent if ckpt["cfg"].get("na") else cls
+        agent = klass(**ckpt["cfg"], device=device)
+        if "qa" in ckpt:
+            agent.qa.load_state_dict(ckpt["qa"])
+            agent.qa_target.load_state_dict(ckpt["qa_target"])
         agent.actor.load_state_dict(ckpt["actor"])
         agent.critic.load_state_dict(ckpt["critic"])
         agent.critic_target.load_state_dict(ckpt["critic_target"])
@@ -350,3 +395,87 @@ class DSRLAgent:
         agent.grad_steps = ckpt["grad_steps"]
         agent.noise_mode = ckpt.get("noise_mode")
         return agent
+
+
+class DSRLNAAgent(DSRLAgent):
+    """Noise-aliased DSRL (Algorithm 1 of the paper), adapted to a large VLA:
+      Q^A(s, a)  TD on the executed action chunk; its bootstrap uses the noise critic at the next state,
+                 Q^W(s', pi^W(s')) ~= Q^A(s', pi_dp(s', pi^W(s'))) (the paper queries pi_dp there instead; one VLA
+                 call per gradient step is not affordable with a 4B-parameter policy)
+      Q^W(s, w)  regressed onto Q^A(s, pi_dp(s, w)) for the noises stored with s (the played one and w ~ N(0, I))
+      pi^W       maximises Q^W, as in DSRL-SAC
+    """
+
+    def __init__(self, act_dim, action_dim_a: int = 192, na: bool = True, **kw):
+        super().__init__(act_dim, **kw)
+        self.cfg.update(action_dim_a=action_dim_a, na=True)
+        c = self.cfg
+        critic_cls = IndependentCritics if self.independent_critics else Critic
+        make = lambda: critic_cls(  # noqa: E731
+            c["n_critics"], c["in_channels"], c["image_size"], c["prop_dim"], action_dim_a, c["hidden"], c["n_layers"],
+            c["per_camera"]).to(self.device)
+        self.qa, self.qa_target = make(), make()
+        self.qa_target.load_state_dict(self.qa.state_dict())
+        self.qa_opt = torch.optim.Adam(self.qa.parameters(), lr=c["critic_lr"])
+
+    def _reduce(self, q):
+        return q.min(0).values if self.independent_critics else q.mean(0)
+
+    def update(self, batch: dict) -> dict:
+        prop, next_prop = self._norm(batch["prop"]), self._norm(batch["next_prop"])
+        alpha = self.log_alpha.exp().detach()
+        aw, aa = batch["alias_w"], batch["alias_a"]          # (B, M, d), (B, M, A); index 0 = played
+        m = aw.shape[1]
+
+        # 1) Q^A: TD on the executed action chunk
+        with torch.no_grad():
+            next_w, next_logp = self.actor(batch["next_img"], next_prop)
+            q_next = self._reduce(self.critic_target(batch["next_img"], next_prop, self.norm_w(next_w)))
+            if self.backup_entropy:
+                q_next = q_next - alpha * next_logp
+            if self.q_max is not None:
+                q_next = q_next.clamp_max(self.q_max)
+            target = batch["rew"] + batch["disc"] * (1 - batch["done"]) * q_next
+        qa = self.qa(batch["img"], prop, aa[:, 0])
+        qa_loss = ((qa - target.unsqueeze(0)) ** 2).mean(1).sum()
+        self.qa_opt.zero_grad(set_to_none=True)
+        qa_loss.backward()
+        self.qa_opt.step()
+
+        # 2) Q^W: distil Q^A over the stored noises (one image encoding, M heads evaluations)
+        with torch.no_grad():
+            fa = self.qa.features(batch["img"])
+            qa_alias = torch.stack([self._reduce(self.qa.heads(fa, prop, aa[:, k])) for k in range(m)], 1)  # (B, M)
+        fw = self.critic.features(batch["img"])
+        qw = torch.stack([self.critic.heads(fw, prop, self.norm_w(aw[:, k])) for k in range(m)], -1)   # (n, B, M)
+        qw_loss = ((qw - qa_alias.unsqueeze(0)) ** 2).mean((1, 2)).sum()
+        self.critic_opt.zero_grad(set_to_none=True)
+        qw_loss.backward()
+        self.critic_opt.step()
+
+        # 3) actor
+        w, logp = self.actor(batch["img"], prop)
+        q_pi = self._reduce(self.critic(batch["img"], prop, self.norm_w(w), encoder_grad=False))
+        actor_loss = (alpha * logp - q_pi).mean()
+        self.actor_opt.zero_grad(set_to_none=True)
+        actor_loss.backward()
+        self.actor_opt.step()
+        if not self.fixed_alpha:
+            alpha_loss = -(self.log_alpha * (logp.detach() + self.target_entropy).mean())
+            self.alpha_opt.zero_grad(set_to_none=True)
+            alpha_loss.backward()
+            self.alpha_opt.step()
+
+        with torch.no_grad():
+            for net, tgt in ((self.critic, self.critic_target), (self.qa, self.qa_target)):
+                for p_, tp in zip(net.parameters(), tgt.parameters()):
+                    tp.lerp_(p_, self.tau)
+        self.grad_steps += 1
+        return dict(critic_loss=float(qw_loss), qa_loss=float(qa_loss), actor_loss=float(actor_loss),
+                    alpha=float(alpha), q=float(qa.mean()), qw=float(qw[..., 0].mean()), entropy=float(-logp.detach().mean()))
+
+    def save(self, path) -> None:
+        super().save(path)
+        ckpt = torch.load(path, map_location="cpu")
+        ckpt.update(qa=self.qa.state_dict(), qa_target=self.qa_target.state_dict())
+        torch.save(ckpt, path)

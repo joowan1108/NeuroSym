@@ -25,7 +25,7 @@ import torch
 from dsrl.common import PERIODIC_EVAL_SEED_OFFSET, add_common_args, connect, evaluate, seed_stream, write_json
 from dsrl.envs import PROP_DIM
 from dsrl.rollout import run_episodes
-from dsrl.sac import DSRLAgent, ReplayBuffer
+from dsrl.sac import DSRLAgent, DSRLNAAgent, NAReplayBuffer, ReplayBuffer
 
 
 def main():
@@ -65,6 +65,10 @@ def main():
                         help="critic target = n real rewards + discounted bootstrap (1 = one-step TD, as in the paper)")
     parser.add_argument("--independent-critics", action="store_true",
                         help="critics with separate encoders, min over them for target and actor (use --n-critics 2)")
+    parser.add_argument("--na", action="store_true",
+                        help="noise-aliased DSRL (paper Algorithm 1): action critic + noise critic distilled from it")
+    parser.add_argument("--na-samples", type=int, default=8,
+                        help="w ~ N(0, I) noises sent to the VLA with every played one, stored for the distillation")
     parser.add_argument("--normalize-w", action="store_true",
                         help="critic and buffer see w rescaled to norm sqrt(d), as the VLA does (chunk mode)")
     parser.add_argument("--buffer-size", type=int, default=40_000)
@@ -85,7 +89,10 @@ def main():
     d = policy.steer_dim
     if args.gamma_auto:
         args.gamma = 1.0 - exec_steps / pool.horizon
-    agent = DSRLAgent(
+    action_dim_a = exec_steps * policy.step_dim   # executed action chunk, input of the action critic
+    agent_cls = DSRLNAAgent if args.na else DSRLAgent
+    agent = agent_cls(
+        **(dict(action_dim_a=action_dim_a) if args.na else {}),
         act_dim=d, magnitude=args.magnitude, hidden=args.hidden,
         n_critics=args.n_critics, gamma=args.gamma, init_alpha=args.init_alpha, device=args.device,
         q_max=0.0 if args.stable else args.q_max,
@@ -98,7 +105,9 @@ def main():
     )
     agent.noise_mode = args.noise_mode  # stored in the checkpoint so evaluation expands w the same way
     sampler = ThreadPoolExecutor(max_workers=1)
-    buffer = ReplayBuffer(args.buffer_size, (9, args.rl_image_size, args.rl_image_size), PROP_DIM, d)
+    img_shape = (9, args.rl_image_size, args.rl_image_size)
+    buffer = (NAReplayBuffer(args.buffer_size, img_shape, PROP_DIM, d, 1 + args.na_samples, action_dim_a) if args.na
+              else ReplayBuffer(args.buffer_size, img_shape, PROP_DIM, d))
     eval_every = args.eval_every or max(1, args.total_env_steps // 4)
     # Periodic evaluations pick best.pt; they use their own scenes so that the final evaluation
     # (EVAL_SEED_OFFSET scenes, shared with the base policy) is not biased by that choice.
@@ -116,15 +125,23 @@ def main():
     train_seed = iter(range(args.seed, args.seed + 10**9))
     state = dict(warm=True, limit=0)
 
+    def base_noise(shape):
+        w = np.clip(rng.standard_normal(shape).astype(np.float32), -args.magnitude, args.magnitude)
+        if args.normalize_w:
+            w = w * (np.sqrt(d) / np.linalg.norm(w, axis=-1, keepdims=True)).astype(np.float32)
+        return w
+
     def choose_train(obs):
         if state["warm"]:
-            w = rng.standard_normal((len(obs), d)).astype(np.float32)
-            w = np.clip(w, -args.magnitude, args.magnitude)
-            if args.normalize_w:
-                w = w * (np.sqrt(d) / np.linalg.norm(w, axis=1, keepdims=True)).astype(np.float32)
+            w = base_noise((len(obs), d))
         else:
             w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]))
-        return w, policy.expand(w)
+        if not args.na:
+            return w, policy.expand(w)
+        # DSRL-NA: also query the VLA with na_samples base-policy noises per observation (index 0 is played)
+        w_all = np.concatenate([w[:, None], base_noise((len(obs), args.na_samples, d))], axis=1)
+        noise = policy.expand(w_all.reshape(-1, d)).reshape(len(obs), 1 + args.na_samples, policy.horizon, policy.dim)
+        return w_all, noise
 
     def choose_eval(obs):
         w = agent.act(np.stack([o["img"] for o in obs]), np.stack([o["prop"] for o in obs]), deterministic=True)
@@ -137,13 +154,18 @@ def main():
         # With --n-step n, each stored transition sums up to n real rewards and bootstraps with gamma^m.
         success = result["success"]
         q = pending.setdefault(env, deque())
-        q.append((obs["img"], obs["prop"], w, 0.0 if success else -1.0))
+        if args.na:   # w (1+K, d); the VLA's action chunks for all of them, executed part only
+            acts = result["vla_actions"][:, :exec_steps].reshape(len(w), -1).astype(np.float32)
+            q.append((obs["img"], obs["prop"], w[0], 0.0 if success else -1.0, w, acts))
+        else:
+            q.append((obs["img"], obs["prop"], w, 0.0 if success else -1.0, None, None))
         end = success or result["timeout"]
 
         def emit():
-            img0, prop0, w0, _ = q[0]
-            ret = sum(args.gamma ** k * r for k, (_, _, _, r) in enumerate(q))
-            buffer.add(img0, prop0, w0, ret, result["img"], result["prop"], float(success), args.gamma ** len(q))
+            img0, prop0, w0, _, aw, aa = q[0]
+            ret = sum(args.gamma ** k * item[3] for k, item in enumerate(q))
+            extra = dict(alias_w=aw, alias_a=aa) if args.na else {}
+            buffer.add(img0, prop0, w0, ret, result["img"], result["prop"], float(success), args.gamma ** len(q), **extra)
             q.popleft()
 
         if end:
@@ -189,6 +211,7 @@ def main():
                 f"[train] steps={stats['env_steps']} ep={stats['episodes']} "
                 f"recent_sr={np.mean(recent) if recent else 0:.2f} q={info['q']:.2f} "
                 f"alpha={info['alpha']:.4f} entropy={info['entropy']:.1f} critic_loss={info['critic_loss']:.4f} actor_loss={info['actor_loss']:.3f} "
+                + (f"qa_loss={info['qa_loss']:.4f} qw={info['qw']:.2f} " if args.na else "") +
                 f"rl_time={stats['rl_time_live']():.0f}s", flush=True,
             )
 

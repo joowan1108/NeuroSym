@@ -46,15 +46,39 @@ class LocalModelClient:
             for key, value in data.items()
         }
         noise = self.noise
+        m = 1 if noise is None else noise.shape[0]
+        if m > 1:
+            # Several noises for the same observation (DSRL-NA): run the VLM once and repeat its outputs
+            # (KV cache, position ids, attention mask) along the batch, so the unchanged model.forward runs the
+            # action expert on all m noises at once.
+            data["state"] = data["state"].repeat_interleave(m, dim=0)
+            data["action_mask"] = data["action_mask"].repeat_interleave(m, dim=0)
+            vlm = model.vlm
+            vlm_forward = vlm.forward
+
+            def repeated_vlm_forward(*args, **kwargs):
+                out = vlm_forward(*args, **kwargs)
+                out.past_key_values.batch_repeat_interleave(m)
+                out.position_ids = out.position_ids.repeat_interleave(m, dim=1)
+                out.attention_mask = out.attention_mask.repeat_interleave(m, dim=0)
+                return out
+
+            vlm.forward = repeated_vlm_forward
         if noise is not None and tuple(noise.shape) != tuple(data["action_mask"].shape):
             raise ValueError(
                 f"noise shape {tuple(noise.shape)} != action_mask shape "
                 f"{tuple(data['action_mask'].shape)}"
             )
-        with inject_initial_noise(noise, "randn_like") as state:
-            outputs = model(**data)
+        try:
+            with inject_initial_noise(noise, "randn_like") as state:
+                outputs = model(**data)
+        finally:
+            if m > 1:
+                del model.vlm.forward   # back to the class method
         require_single_hit(state, noise, "XR-1")
-        return self.processor.decode_action(outputs.actions.cpu(), robot_type=robot_type)
+        decoded = self.processor.decode_action(outputs.actions.cpu(), robot_type=robot_type)
+        self.last_all = decoded   # all m decoded chunks; EvalClient.infer only keeps the first
+        return decoded
 
     def close(self):
         pass
@@ -129,9 +153,12 @@ def main():
                 key: np.stack([np.ascontiguousarray(frame[key], dtype=np.uint8) for frame in frames])
                 for key in entry.CAMERA_KEYS
             }
-            local.noise = None if noise is None else torch.from_numpy(np.asarray(noise[i], np.float32))[None]
+            n_i = None if noise is None else torch.from_numpy(np.asarray(noise[i], np.float32))
+            multi = n_i is not None and n_i.dim() == 3          # (m, H, D): several noises, one observation
+            local.noise = None if n_i is None else (n_i if multi else n_i[None])
             try:
-                actions.append(client.infer(states, images, obs["instruction"]))
+                first = client.infer(states, images, obs["instruction"])
+                actions.append(local.last_all[:, :, : first.shape[-1]].float().numpy() if multi else first)
             finally:
                 local.noise = None
         torch.cuda.synchronize()
